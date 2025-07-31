@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inopyutils"
+version = "0.0.1"
+authors = [
+  { name="Inoland", email="contact@inoland.net" },
+]
+description = "Python utils for specific usecase"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+]
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+
+[tool.setuptools.packages.find]
+where  = ["src"]
+include = ["inopyutils*"]
+
+[project.urls]
+Homepage = "https://github.com/nobandegani/InoPyUtils"
+Issues = "https://github.com/nobandegani/InoPyUtils/issues"
