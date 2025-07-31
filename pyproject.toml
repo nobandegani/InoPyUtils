@@ -18,6 +18,9 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    "pillow",
+    "pillow_heif",
+    "opencv-python"
 ]
 license = "MPL-2.0"
 license-files = ["LICENSE"]
