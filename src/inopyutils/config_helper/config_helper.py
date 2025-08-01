@@ -2,10 +2,9 @@ import configparser
 from pathlib import Path
 
 class InoConfig:
-    def __init__(self, path='base.ini'):
+    def __init__(self, path='configs/base.ini'):
         self.debug = False
-        self.path = Path(__file__).parent.parent / "configs" / path
-        print(self.path)
+        self.path = Path(path)
         self.config = configparser.ConfigParser()
 
         self._load()
