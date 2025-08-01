@@ -1,11 +1,13 @@
 import configparser
 from pathlib import Path
 
-class InoConfig:
-    def __init__(self, path='configs/base.ini'):
+class InoConfigHelper:
+    def __init__(self, path='configs/base.ini', save_as: bool = False, save_as_path: Path = None):
         self.debug = False
         self.path = Path(path)
         self.config = configparser.ConfigParser()
+        self.save_as = save_as
+        self.save_as_path = save_as_path
 
         self._load()
 
@@ -38,11 +40,14 @@ class InoConfig:
     def set(self, section, key, value):
         if section not in self.config:
             self.config[section] = {}
+
         if self.debug or True:
             print(f"📝 Setting [{section}][{key}] = {value} ({type(value)})")
+
         self.config[section][key] = str(value).strip()
-        with open(self.path, "w") as configfile:
-            self.config.write(configfile)
+
+        self.save()
+
         self._load()
 
     def _is_valid_config(self):
@@ -52,4 +57,10 @@ class InoConfig:
         except Exception:
             return False
 
-InoConf = InoConfig()
+    def save(self):
+        if self.save_as:
+            final_path = self.save_as_path
+        else:
+            final_path = self.path
+        with open(final_path, "w") as configfile:
+            self.config.write(configfile)
