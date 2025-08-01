@@ -1,8 +1,9 @@
 import zipfile
 import asyncio
+import json
 import shutil
 from pathlib import Path
-from src.inopyutils import InoMediaHelper
+from ..meida_helper.media_helper import InoMediaHelper
 
 class InoFileHelper:
     @staticmethod
@@ -104,6 +105,36 @@ class InoFileHelper:
         }
 
     @staticmethod
+    async def move_file(from_path: Path, to_path: Path) -> dict:
+        if not from_path.exists():
+            return {
+                "success": False,
+                "msg": f"{from_path.name} not exist"
+            }
+
+        if not from_path.is_file():
+            return {
+                "success": False,
+                "msg": f"{from_path.name} is not a file"
+            }
+
+        if not to_path.parent.exists():
+            to_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            await asyncio.to_thread(shutil.move, str(from_path.resolve()), str(to_path.resolve()))
+            return {
+                "success": True,
+                "msg": f"File {from_path} moved to {to_path}"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "msg": f"⚠️ Failed to move {from_path.name}: {e}"
+            }
+
+
+    @staticmethod
     async def copy_files(
             from_path: Path,
             to_path: Path,
@@ -173,12 +204,20 @@ class InoFileHelper:
             input_path: Path,
             include_image=True,
             include_video=True,
-            image_valid_exts = [".png"],
-            image_convert_exts = [".webp", ".tiff", ".bmp", ".heic", ".jpeg", ".jpg"],
-            video_valid_exts = [".mp4"],
-            video_convert_exts = [".avi", ".mov", ".mkv", ".flv"]
+            image_valid_exts : list[str] | None = None,
+            image_convert_exts: list[str] | None = None,
+            video_valid_exts : list[str] | None = None,
+            video_convert_exts : list[str] | None = None
 
     ) -> dict:
+        if not input_path.exists() or not input_path.is_dir():
+            return {"success": False, "msg": f"{input_path!s} is not a directory"}
+
+        image_valid_exts = image_valid_exts or [".png"]
+        image_convert_exts = image_convert_exts or [".webp", ".tiff", ".bmp", ".heic", ".jpeg", ".jpg"]
+        video_valid_exts = video_valid_exts or [".mp4"]
+        video_convert_exts = video_convert_exts or [".avi", ".mov", ".mkv", ".flv"]
+
         log_file = input_path.parent / "validate_log.txt"
         log_lines = []
 
@@ -206,7 +245,7 @@ class InoFileHelper:
                     image_resize_res
                 )
 
-            if include_video and ext in video_valid_exts:
+            elif include_video and ext in video_valid_exts:
                 video_convert_res = await InoMediaHelper.video_convert_ffmpeg(
                     input_path=file,
                     output_path=file,
@@ -231,44 +270,53 @@ class InoFileHelper:
                 )
             elif not include_image and ext in image_valid_exts:
                 move_file = file.parent / "skipped_images" / file.name
-                move_file.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.move, str(file), str(move_file))
+                move_file_res = await InoFileHelper.move_file(file, move_file)
+                if not move_file_res["success"]:
+                    return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped image: {file.name}"
                 )
             elif not include_image and ext in image_convert_exts:
                 move_file = file.parent / "skipped_images_unsupported" / file.name
-                move_file.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.move, str(file), str(move_file))
+                move_file_res = await InoFileHelper.move_file(file, move_file)
+                if not move_file_res["success"]:
+                    return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped unsupported image: {file.name}"
                 )
             elif not include_video and ext in video_valid_exts:
                 move_file = file.parent / "skipped_videos" / file.name
-                move_file.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.move, str(file), str(move_file))
+                move_file_res = await InoFileHelper.move_file(file, move_file)
+                if not move_file_res["success"]:
+                    return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped video: {file.name}"
                 )
             elif not include_video and ext in video_convert_exts:
                 move_file = file.parent / "skipped_videos_unsupported" / file.name
-                move_file.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.move, str(file), str(move_file))
+                move_file_res = await InoFileHelper.move_file(file, move_file)
+                if not move_file_res["success"]:
+                    return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped unsupported video: {file.name}"
                 )
             else:
                 # -----skip all unsupported files
                 move_file = file.parent / "unsupported_files" / file.name
-                move_file.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.move, str(file), str(move_file))
+                move_file_res = await InoFileHelper.move_file(file, move_file)
+                if not move_file_res["success"]:
+                    return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped unsupported file: {file.name}"
                 )
 
         if log_lines:
-            with open(log_file, "w", encoding="utf-8") as log:
-                log.write("\n".join(log_lines))
+            with log_file.open("w", encoding="utf-8") as f:
+                for entry in log_lines:
+                    # if it’s already a string, wrap it in a dict
+                    if isinstance(entry, str):
+                        entry = {"success": True, "msg": entry}
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         if error:
             return {
                 "success": False,
