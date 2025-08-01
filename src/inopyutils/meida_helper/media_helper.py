@@ -1,4 +1,5 @@
-import subprocess
+import asyncio
+import sys
 from pathlib import Path
 
 from pillow_heif import register_heif_opener
@@ -11,103 +12,138 @@ register_heif_opener()
 
 class InoMediaHelper:
     @staticmethod
-    def video_convert_ffmpeg(input_path: Path, output_path: Path, remove_input: bool, force_max_fps: bool, max_res: int = 2560, max_fps: int = 30) -> dict:
-        try:
-            output_path = output_path.with_suffix('.mp4')
-            temp_output = output_path.with_name(output_path.stem + "_converted.mp4")
+    async def video_convert_ffmpeg(
+            input_path: Path,
+            output_path: Path,
+            change_res: bool,
+            change_fps: bool,
+            max_res: int = 2560,
+            max_fps: int = 30
+    ) -> dict:
+        output_path = output_path.with_suffix('.mp4')
+        temp_output = output_path.with_name(output_path.stem + "_converted.mp4")
 
-            args = [
-                'ffmpeg', '-y',
-                '-loglevel', 'error',
-                '-i', str(input_path),
-                ]
-
-            try:
-                if force_max_fps:
-                    args += ['-r', str(max_fps)]
-                else:
-                    fps = InoMediaHelper.get_video_fps(input_path)
-                    if fps > max_fps:
-                        args += ['-r', str(max_fps)]
-            except Exception as e:
-                print(f"⚠️ Could not determine FPS: {e} for {input_path}")
-
-            args += ['-vf', f"scale='if(gt(iw,ih),min(iw,{max_res}),-2)':'if(gt(ih,iw),min(ih,{max_res}),-2)'"]
-
-            args += [
-                '-preset', 'medium',
-                '-crf', '23',
-                '-c:v', 'libx264',
-                '-c:a', 'aac',
-                '-b:a', '192k'
+        args = [
+            'ffmpeg', '-y',
+            '-loglevel', 'error',
+            '-i', str(input_path),
             ]
 
-            args += ['-f', 'mp4']
-            args += [str(temp_output)]
+        if change_fps:
+            args += ['-r', str(max_fps)]
+
+        if change_res:
+            args += ['-vf', f"scale='if(gt(iw,ih),min(iw,{max_res}),-2)':'if(gt(ih,iw),min(ih,{max_res}),-2)'"]
+
+        args += [
+            '-preset', 'medium',
+            '-crf', '23',
+            '-c:v', 'libx264',
+            '-c:a', 'aac',
+            '-b:a', '192k'
+        ]
+
+        args += ['-f', 'mp4']
+        args += [str(temp_output)]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+
+            if proc.returncode != 0:
+                return {
+                    "success": False,
+                    "msg": f"❌ Conversion failed ({input_path.name}): {stderr.decode().strip()}",
+                    "original_size": 0,
+                    "converted_size": 0,
+                }
 
             original_size = input_path.stat().st_size // 1024
-            subprocess.run(args, capture_output=True, text=True, check=True)
             converted_size = temp_output.stat().st_size // 1024
-            print(f"📦 Size reduced from {original_size} KB to {converted_size} KB")
 
-            if temp_output.exists():
-                if remove_input:
-                    input_path.unlink()
-                shutil.move(temp_output, output_path)
-                result = f"🎥 Converted video: {input_path.name} → {temp_output.name}"
-            else:
-                print(f"❌ Temp output not created: {temp_output}")
-                return f"❌ Conversion failed, no output file created for: {input_path.name}"
+            if not temp_output.exists():
+                return {
+                    "success": False,
+                    "msg": "Conversion failed, converted file not found",
+                    "original_size": 0,
+                    "converted_size": 0,
+                }
 
-            print(result)
-            return result
-        except subprocess.CalledProcessError as e:
-            result = f"❌ Video conversion failed: {input_path.name} — {e}"
-            print(result)
-            return result
+            await asyncio.to_thread(input_path.unlink)
+            await asyncio.to_thread(shutil.move, str(temp_output), str(output_path))
+            return {
+                "success": True,
+                "msg": f"✅ Converted {input_path.name} ",
+                "original_size": original_size,
+                "converted_size": converted_size,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "msg": f"❌ Video conversion error: {e}",
+                "original_size": 0,
+                "converted_size": 0,
+            }
 
 
     @staticmethod
-    def image_convert_ffmpeg(input_path: Path, output_path: Path):
+    async def image_convert_ffmpeg(input_path: Path, output_path: Path):
+        args = [
+            'ffmpeg', '-y',
+            '-loglevel', 'error',
+            '-i', str(input_path),
+            str(output_path)
+        ]
         try:
-            subprocess.run([
-                'ffmpeg', '-y',
-                '-loglevel', 'error',
-                '-i', str(input_path),
-                str(output_path)
-                ], capture_output=True, text=True, check=True
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
-            result = f"🖼️ Converted image: {input_path.name} → {output_path.name}"
-            print(result)
-            input_path.unlink()
-            return result
-        except subprocess.CalledProcessError as e:
-            result = f"❌ Image conversion failed: {input_path.name} — {e}"
-            print(result)
-            return result
+            stdout, stderr = await proc.communicate()
+
+            if proc.returncode != 0:
+                return {
+                    "success": False,
+                    "msg": f"❌ Conversion failed ({input_path.name}): {stderr.decode().strip()}",
+                }
+
+            await asyncio.to_thread(input_path.unlink)
+            return {
+                "success": True,
+                "msg": f"✅ Converted {input_path.name} ",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "msg": f"❌ Image conversion error: {e}",
+            }
 
     @staticmethod
-    def image_convert_pillow(input_path: Path, output_path: Path) -> str:
+    def image_convert_pillow(input_path: Path, output_path: Path) -> dict:
         try:
-            #temp_output = output_path.with_name(output_path.stem + "_converted.png")
-            temp_output = output_path
-
             img = Image.open(input_path)
-            img.save(temp_output, format="PNG")
+            img.save(output_path, format="PNG")
             img.close()
 
-            result = f"🖼️ Converted image: {input_path.name} → {output_path.name}"
-            print(result)
-
             input_path.unlink()
 
-            return result
+            return {
+                "success": True,
+                "msg": f"✅ Converted {input_path.name}",
+            }
         except Exception as e:
-            result = f"❌ Image conversion failed: {input_path.name} — {e}"
-            print(result)
-            return result
+            return {
+                "success": False,
+                "msg": f"❌ Image conversion failed: {input_path.name} — {e}",
+            }
 
-    def image_resize_pillow(input_path: Path, output_path: Path, max_res: int = 3200) -> str:
+    @staticmethod
+    def image_resize_pillow(input_path: Path, output_path: Path, max_res: int = 3200) -> dict:
         try:
             img = Image.open(input_path)
 
@@ -123,18 +159,26 @@ class InoMediaHelper:
 
                 shutil.move(temp_output, output_path)
 
-                result = f"🖼️ Resized image: {input_path.name}: {old_size[0]}x{old_size[1]} -> {new_size[0]}x{new_size[1]}"
-                print(result)
-
-                return result
+                return {
+                    "success": True,
+                    "msg": f"✅ Converted {input_path.name}",
+                    "old_size": old_size,
+                    "new_size": new_size,
+                }
             else:
-                result = f"🖼️ Resize image skipped: {input_path.name}: {img.width}x{img.height}"
-                print(result)
-                return result
+                return {
+                    "success": True,
+                    "msg": f"🖼️ Resize image skipped: {input_path.name}: {img.width}x{img.height}",
+                    "old_size": None,
+                    "new_size": None,
+                }
         except Exception as e:
-            result = f"❌ Image resize failed: {input_path.name} — {e}"
-            print(result)
-            return result
+            return {
+                "success": False,
+                "msg": f"❌ Image resize failed: {input_path.name} — {e}",
+                "old_size": None,
+                "new_size": None,
+            }
 
     @staticmethod
     def validate_video_res_fps(input_path: Path, max_res: int = 2560, max_fps: int = 30) -> dict:
