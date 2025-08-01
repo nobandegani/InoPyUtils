@@ -76,6 +76,33 @@ class InoFileHelper:
         }
 
     @staticmethod
+    async def remove_folder(folder_path: Path) -> dict:
+        if not folder_path.exists():
+            return {
+                "success": False,
+                "msg": f"{folder_path.name} not exist"
+            }
+
+        if not folder_path.is_dir():
+            return {
+                "success": False,
+                "msg": f"{folder_path.name} is not a directory"
+            }
+
+        try:
+            await asyncio.to_thread(shutil.rmtree, folder_path)
+        except Exception as e:
+            return {
+                "success": False,
+                "msg": f"⚠️ Failed to delete {folder_path}: {e}"
+            }
+
+        return {
+            "success": True,
+            "msg": f"File {folder_path.name} deleted"
+        }
+
+    @staticmethod
     def copy_files(
             from_path: Path,
             to_path: Path,
@@ -83,6 +110,7 @@ class InoFileHelper:
             rename_files: bool = True,
             prefix_name: str = "File"
     ) -> dict:
+        to_path.mkdir(parents=True, exist_ok=True)
 
         log_file = to_path.parent / "copy_log.txt"
         log_lines = []
@@ -92,6 +120,7 @@ class InoFileHelper:
         else:
             files = [f for f in from_path.iterdir() if f.is_file()]
 
+        error = False
         for idx, file in enumerate(files, start=1):
             if not file.is_file():
                 log_lines.append(f"⚠️ {file}: not a file")
@@ -121,11 +150,17 @@ class InoFileHelper:
                 log_lines.append(f"✅ Copied: {file.resolve()} => {dest.resolve()}")
             except Exception as e:
                 log_lines.append(f"❌ Failed to copy {file} → {dest} — {e}")
-                continue
+                error = True
 
         if log_lines:
             with open(log_file, "w", encoding="utf-8") as log:
                 log.write("\n".join(log_lines))
+
+        if error:
+            return {
+                "success": False,
+                "msg": f"Failed to copy files, see log file: {log_file}"
+            }
 
         return {
             "success": True,
