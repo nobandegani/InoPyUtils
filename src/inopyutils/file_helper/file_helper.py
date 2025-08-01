@@ -2,6 +2,7 @@ import zipfile
 import asyncio
 import shutil
 from pathlib import Path
+from src.inopyutils import InoMediaHelper
 
 class InoFileHelper:
     @staticmethod
@@ -103,7 +104,7 @@ class InoFileHelper:
         }
 
     @staticmethod
-    def copy_files(
+    async def copy_files(
             from_path: Path,
             to_path: Path,
             iterate_subfolders: bool = True,
@@ -146,7 +147,7 @@ class InoFileHelper:
 
             print(f"Coping: {file} → {dest}")
             try:
-                shutil.copy2(file, dest)
+                await asyncio.to_thread(shutil.copy2, str(file), str(dest))
                 log_lines.append(f"✅ Copied: {file.resolve()} => {dest.resolve()}")
             except Exception as e:
                 log_lines.append(f"❌ Failed to copy {file} → {dest} — {e}")
@@ -165,4 +166,116 @@ class InoFileHelper:
         return {
             "success": True,
             "msg": f"📂 Coping and renaming files completed"
+        }
+
+    @staticmethod
+    async def validate_files(
+            input_path: Path,
+            include_image=True,
+            include_video=True,
+            image_valid_exts = [".png"],
+            image_convert_exts = [".webp", ".tiff", ".bmp", ".heic", ".jpeg", ".jpg"],
+            video_valid_exts = [".mp4"],
+            video_convert_exts = [".avi", ".mov", ".mkv", ".flv"]
+
+    ) -> dict:
+        log_file = input_path.parent / "validate_log.txt"
+        log_lines = []
+
+        error = False
+        for file in input_path.iterdir():
+            if not file.is_file():
+                continue
+
+            ext = file.suffix.lower()
+
+            if include_image and ext in image_valid_exts:
+                image_resize_res = InoMediaHelper.image_resize_pillow(file, file)
+                log_lines.append(
+                    image_resize_res
+                )
+
+            elif include_image and ext in image_convert_exts:
+                new_file = file.with_suffix('.png')
+                image_convert_res = InoMediaHelper.image_convert_pillow(file, new_file)
+                log_lines.append(
+                    image_convert_res
+                )
+                image_resize_res = InoMediaHelper.image_resize_pillow(new_file, new_file)
+                log_lines.append(
+                    image_resize_res
+                )
+
+            if include_video and ext in video_valid_exts:
+                video_convert_res = await InoMediaHelper.video_convert_ffmpeg(
+                    input_path=file,
+                    output_path=file,
+                    change_res=True,
+                    change_fps=True
+                )
+
+                log_lines.append(
+                    video_convert_res
+                )
+            elif include_video and ext in video_convert_exts:
+                new_file = file.with_suffix('.mp4')
+                video_convert_res = await InoMediaHelper.video_convert_ffmpeg(
+                    input_path=file,
+                    output_path=new_file,
+                    change_res=True,
+                    change_fps=True
+                )
+
+                log_lines.append(
+                    video_convert_res
+                )
+            elif not include_image and ext in image_valid_exts:
+                move_file = file.parent / "skipped_images" / file.name
+                move_file.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(shutil.move, str(file), str(move_file))
+                log_lines.append(
+                    f"⚠️ Skipped image: {file.name}"
+                )
+            elif not include_image and ext in image_convert_exts:
+                move_file = file.parent / "skipped_images_unsupported" / file.name
+                move_file.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(shutil.move, str(file), str(move_file))
+                log_lines.append(
+                    f"⚠️ Skipped unsupported image: {file.name}"
+                )
+            elif not include_video and ext in video_valid_exts:
+                move_file = file.parent / "skipped_videos" / file.name
+                move_file.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(shutil.move, str(file), str(move_file))
+                log_lines.append(
+                    f"⚠️ Skipped video: {file.name}"
+                )
+            elif not include_video and ext in video_convert_exts:
+                move_file = file.parent / "skipped_videos_unsupported" / file.name
+                move_file.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(shutil.move, str(file), str(move_file))
+                log_lines.append(
+                    f"⚠️ Skipped unsupported video: {file.name}"
+                )
+            else:
+                # -----skip all unsupported files
+                move_file = file.parent / "unsupported_files" / file.name
+                move_file.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(shutil.move, str(file), str(move_file))
+                log_lines.append(
+                    f"⚠️ Skipped unsupported file: {file.name}"
+                )
+
+        if log_lines:
+            with open(log_file, "w", encoding="utf-8") as log:
+                log.write("\n".join(log_lines))
+        if error:
+            return {
+                "success": False,
+                "msg": f"Failed to validate files, see log file: {log_file}"
+            }
+
+        return {
+            "success": True,
+            "msg": f"📂 Validating files completed"
         }
