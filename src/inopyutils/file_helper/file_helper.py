@@ -1,5 +1,6 @@
 import zipfile
 import asyncio
+import shutil
 from pathlib import Path
 
 class InoFileHelper:
@@ -72,4 +73,61 @@ class InoFileHelper:
         return {
             "success": True,
             "msg": f"File {file_path.name} deleted"
+        }
+
+    @staticmethod
+    def copy_and_rename_files(
+            from_path: Path,
+            to_path: Path,
+            iterate_subfolders: bool = True,
+            rename_files: bool = True,
+            prefix_name: str = "File"
+    ) -> dict:
+
+        log_file = to_path.parent / "copy_log.txt"
+        log_lines = []
+
+        if iterate_subfolders:
+            files = [f for f in from_path.rglob("*") if f.is_file()]
+        else:
+            files = [f for f in from_path.iterdir() if f.is_file()]
+
+        for idx, file in enumerate(files, start=1):
+            if not file.is_file():
+                log_lines.append(f"⚠️ {file}: not a file")
+                continue
+
+            ext = file.suffix.lower()
+            if ext == "":
+                log_lines.append(f"⚠️ file with no extension: {file.name}")
+                ext = file.name
+
+            if rename_files:
+                new_name = f"{prefix_name}_{idx:03}{ext}"
+            else:
+                if not file.stem.strip():
+                    log_lines.append(f"⚠️ Empty or invalid filename detected: {file.name}")
+                    new_name = f"unnamed_{idx:03}{ext}"
+                else:
+                    new_name = file.name
+
+            dest = to_path / new_name
+            if dest.exists():
+                log_lines.append(f"⚠️ target file trying to copy to is already exist: {dest}")
+
+            print(f"Coping: {file} → {dest}")
+            try:
+                shutil.copy2(file, dest)
+                log_lines.append(f"✅ Copied: {file.resolve()} => {dest.resolve()}")
+            except Exception as e:
+                log_lines.append(f"❌ Failed to copy {file} → {dest} — {e}")
+                continue
+
+        if log_lines:
+            with open(log_file, "w", encoding="utf-8") as log:
+                log.write("\n".join(log_lines))
+
+        return {
+            "success": True,
+            "msg": f"📂 Coping and renaming files completed"
         }
