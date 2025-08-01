@@ -76,7 +76,7 @@ class InoFileHelper:
         }
 
     @staticmethod
-    def copy_and_rename_files(
+    def copy_files(
             from_path: Path,
             to_path: Path,
             iterate_subfolders: bool = True,
