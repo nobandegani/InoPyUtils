@@ -313,7 +313,6 @@ class InoFileHelper:
         if log_lines:
             with log_file.open("w", encoding="utf-8") as f:
                 for entry in log_lines:
-                    # if it’s already a string, wrap it in a dict
                     if isinstance(entry, str):
                         entry = {"success": True, "msg": entry}
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")

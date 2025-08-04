@@ -2,12 +2,12 @@ import configparser
 from pathlib import Path
 
 class InoConfigHelper:
-    def __init__(self, path='configs/base.ini', save_as: bool = False, save_as_path: Path = None):
+    def __init__(self, path='configs/base.ini', load_from: Path = None):
         self.debug = False
         self.path = Path(path)
         self.config = configparser.ConfigParser()
-        self.save_as = save_as
-        self.save_as_path = save_as_path
+        if load_from is not None:
+            self.config.read(load_from)
 
         self._load()
 
@@ -58,9 +58,5 @@ class InoConfigHelper:
             return False
 
     def save(self):
-        if self.save_as:
-            final_path = self.save_as_path
-        else:
-            final_path = self.path
-        with open(final_path, "w") as configfile:
+        with open(self.path, "w") as configfile:
             self.config.write(configfile)
