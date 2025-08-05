@@ -41,7 +41,7 @@ class InoConfigHelper:
         if section not in self.config:
             self.config[section] = {}
 
-        if self.debug or True:
+        if self.debug:
             print(f"📝 Setting [{section}][{key}] = {value} ({type(value)})")
 
         self.config[section][key] = str(value).strip()
