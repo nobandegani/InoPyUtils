@@ -20,7 +20,8 @@ classifiers = [
 dependencies = [
     "pillow",
     "pillow_heif",
-    "opencv-python"
+    "opencv-python",
+    "inocloudreve"
 ]
 license = "MPL-2.0"
 license-files = ["LICENSE"]
