@@ -2,10 +2,28 @@ import zipfile
 import asyncio
 import json
 import shutil
+import re
 from pathlib import Path
 from ..meida_helper.media_helper import InoMediaHelper
 
 class InoFileHelper:
+    @staticmethod
+    def increment_batch_name(name: str) -> str:
+        """
+        Given a string ending in digits, increments that number
+        and preserves leading zeros. If no trailing digits, returns name unchanged.
+        """
+        m = re.match(r'^(.*?)(\d+)$', name)
+        if not m:
+            # no numeric suffix
+            return name
+
+        prefix, numstr = m.group(1), m.group(2)
+        width = len(numstr)
+        new_num = int(numstr) + 1
+        # pad with zeros back to the original width
+        return f"{prefix}{new_num:0{width}d}"
+
     @staticmethod
     async def zip(
             to_zip: Path,
