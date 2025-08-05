@@ -7,6 +7,81 @@ from ..meida_helper.media_helper import InoMediaHelper
 
 class InoFileHelper:
     @staticmethod
+    async def zip(
+            to_zip: Path,
+            path_to_save: Path,
+            zip_file_name: str,
+            compression_method: int = 8,
+            compression_level: int = 5,
+            include_root: bool = True
+    ) -> dict:
+        """
+                Zip a file or folder `to_zip` into `path_to_save/zip_file_name`.
+
+                Args:
+                    to_zip: path to file or directory to compress
+                    path_to_save: directory where the .zip will be written
+                    zip_file_name: name of the .zip file (with .zip extension)
+                    compression_method: ZIP_STORED = 0, ZIP_DEFLATED = 8, ZIP_BZIP2 = 12, ZIP_LZMA = 14
+                    compression_level: integer 0–9 for zlib compression level, or 5 for default.
+                    include_root: if True and `to_zip` is a directory, include the top-level
+                                  folder in the archive; if False, only include its contents.
+
+                Returns:
+                    {
+                      "success": bool,
+                      "msg": str,
+                      "original_size": int,     # bytes before compression
+                      "zipped_size": int        # bytes after compression
+                    }
+        """
+
+        if not to_zip.exists():
+            return {"success": False, "msg": f"❌ Path not found: {to_zip}"}
+
+        path_to_save.mkdir(parents=True, exist_ok=True)
+        out_path = path_to_save / zip_file_name
+
+        def _do_zip():
+            total_in = 0
+            with zipfile.ZipFile(out_path, "w", compression=compression_method, compresslevel=compression_level) as zf:
+                if to_zip.is_file():
+                    total_in += to_zip.stat().st_size
+                    zf.write(to_zip, arcname=to_zip.name)
+                else:
+                    base = to_zip.parent if include_root else to_zip
+                    for file in to_zip.rglob("*"):
+                        if not file.is_file():
+                            continue
+                        total_in += file.stat().st_size
+                        arc = file.relative_to(base)
+                        zf.write(file, arcname=str(arc))
+            return total_in
+
+        try:
+            original_size = await asyncio.to_thread(_do_zip)
+            zipped_size = out_path.stat().st_size
+            return {
+                "success": True,
+                "msg": (
+                    f"✅ Zipped '{to_zip.name}' to '{out_path}': "
+                    f"{original_size} → {zipped_size} bytes"
+                ),
+                "original_size": original_size,
+                "zipped_size": zipped_size,
+            }
+        except RuntimeError as re:
+            return {
+                "success": False,
+                "msg": f"❌ Error zipping '{to_zip}': {re}"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "msg": f"❌ Error zipping '{to_zip}': {e}"
+            }
+
+    @staticmethod
     async def unzip(zip_path: Path, output_path: Path) -> dict:
         output_path.mkdir(parents=True, exist_ok=True)
         if not zip_path.is_file():
@@ -133,6 +208,22 @@ class InoFileHelper:
                 "msg": f"⚠️ Failed to move {from_path.name}: {e}"
             }
 
+    @staticmethod
+    async def count_files(path: Path) -> dict:
+        if not path.exists() or not path.is_dir():
+            return {
+                "success": False,
+                "msg": f"{path.name} not exist",
+                "count": -1
+            }
+
+        files = await asyncio.to_thread(lambda: [p for p in path.iterdir() if p.is_file()])
+        return {
+            "success": True,
+            "msg": f"Counting files successful",
+            "count": len(files)
+        }
+
 
     @staticmethod
     async def copy_files(
@@ -144,7 +235,7 @@ class InoFileHelper:
     ) -> dict:
         to_path.mkdir(parents=True, exist_ok=True)
 
-        log_file = to_path.parent / "copy_log.txt"
+        log_file = to_path.parent / f"{to_path.stem}_copy_log.txt"
         log_lines = []
 
         if iterate_subfolders:
@@ -176,7 +267,6 @@ class InoFileHelper:
             if dest.exists():
                 log_lines.append(f"⚠️ target file trying to copy to is already exist: {dest}")
 
-            print(f"Coping: {file} → {dest}")
             try:
                 await asyncio.to_thread(shutil.copy2, str(file), str(dest))
                 log_lines.append(f"✅ Copied: {file.resolve()} => {dest.resolve()}")
@@ -218,7 +308,7 @@ class InoFileHelper:
         video_valid_exts = video_valid_exts or [".mp4"]
         video_convert_exts = video_convert_exts or [".avi", ".mov", ".mkv", ".flv"]
 
-        log_file = input_path.parent / "validate_log.txt"
+        log_file = input_path.parent / f"{input_path.stem}_validate_log.txt"
         log_lines = []
 
         error = False
