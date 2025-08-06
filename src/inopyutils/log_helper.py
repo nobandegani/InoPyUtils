@@ -38,14 +38,16 @@ class InoLogHelper:
 
         self.log_file.touch(exist_ok=True)
 
-    def add(self, log_data: dict, category: LogCategory = None) -> None:
+    def add(self, log_data: dict, msg: str = "", category: LogCategory = None) -> None:
         """
         Append a log entry to the log file in JSON-lines format.
 
         Args:
-            category (LogCategory): Enum value denoting the log category.
             log_data (dict): Dictionary of log details to record.
+            msg (str): Message to record along with the log details.
+            category (LogCategory): Enum value denoting the log category.
         """
+
         if category is None:
             if isinstance(log_data, dict) and "success" in log_data:
                 category = LogCategory.INFO if log_data.get("success") else LogCategory.ERROR
@@ -55,6 +57,7 @@ class InoLogHelper:
         entry = {
             "timestamp": datetime.datetime.now().isoformat(),
             "category": category.value,
+            "msg": msg,
             "data": log_data
         }
 
