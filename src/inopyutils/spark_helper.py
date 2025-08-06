@@ -1,7 +1,7 @@
 from enum import Enum
 from inocloudreve import CloudreveClient
 
-from ..file_helper.file_helper import InoFileHelper
+from .file_helper import InoFileHelper
 
 
 class SparkWorkflows(Enum):

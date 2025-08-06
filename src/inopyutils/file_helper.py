@@ -4,7 +4,7 @@ import json
 import shutil
 import re
 from pathlib import Path
-from ..meida_helper.media_helper import InoMediaHelper
+from .media_helper import InoMediaHelper
 
 class InoFileHelper:
     @staticmethod
@@ -15,14 +15,47 @@ class InoFileHelper:
         """
         m = re.match(r'^(.*?)(\d+)$', name)
         if not m:
-            # no numeric suffix
             return name
 
         prefix, numstr = m.group(1), m.group(2)
         width = len(numstr)
         new_num = int(numstr) + 1
-        # pad with zeros back to the original width
         return f"{prefix}{new_num:0{width}d}"
+
+    @staticmethod
+    def get_last_file(path: Path) -> dict:
+        """
+        Return the most recently modified file in `path`.
+        Returns:
+            {
+              "success": bool,
+              "file": str,      # full path to the file (when success=True)
+              "modified": float,# timestamp of last modification
+              "msg": str
+            }
+        """
+        if not path.exists() or not path.is_dir():
+            return {
+                "success": False,
+                "msg": f"❌ Path not found or not a directory: {path}"
+            }
+
+        files = [p for p in path.iterdir() if p.is_file()]
+        if not files:
+            return {
+                "success": False,
+                "msg": f"❌ No files found in directory: {path}"
+            }
+
+        last_file = max(files, key=lambda p: p.stat().st_mtime)
+        mtime = last_file.stat().st_mtime
+
+        return {
+            "success": True,
+            "file": last_file,
+            "modified": mtime,
+            "msg": f"✅ Last file is '{last_file.name}' (modified {mtime})"
+        }
 
     @staticmethod
     async def zip(
