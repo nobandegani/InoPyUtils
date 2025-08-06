@@ -3,7 +3,7 @@ from enum import Enum
 import datetime
 import json
 
-from src.inopyutils import InoFileHelper
+from .file_helper import InoFileHelper
 
 
 class LogCategory(Enum):
@@ -12,7 +12,7 @@ class LogCategory(Enum):
     ERROR = "ERROR"
 
 
-class LogHelper:
+class InoLogHelper:
     """
     A helper class to manage logging to a log file with a given base name.
     """
@@ -38,7 +38,7 @@ class LogHelper:
 
         self.log_file.touch(exist_ok=True)
 
-    def add_log(self, log_data: dict, category: LogCategory = None) -> None:
+    def add(self, log_data: dict, category: LogCategory = None) -> None:
         """
         Append a log entry to the log file in JSON-lines format.
 
