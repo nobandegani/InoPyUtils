@@ -1,5 +1,5 @@
 import zipfile
-import asyncio
+import asyncio, os
 import json
 import shutil
 import re
@@ -260,7 +260,10 @@ class InoFileHelper:
             }
 
     @staticmethod
-    async def count_files(path: Path) -> dict:
+    async def count_files(path: Path, recursive: bool = False) -> dict:
+        """
+        Count files in `path`. If `recursive=True`, include subfolders.
+        """
         if not path.exists() or not path.is_dir():
             return {
                 "success": False,
@@ -268,12 +271,18 @@ class InoFileHelper:
                 "count": -1
             }
 
-        files = await asyncio.to_thread(lambda: [p for p in path.iterdir() if p.is_file()])
-        return {
-            "success": True,
-            "msg": f"Counting files successful",
-            "count": len(files)
-        }
+        def _count_nonrec() -> int:
+            return sum(1 for p in path.iterdir() if p.is_file())
+
+        def _count_rec() -> int:
+            total = 0
+            for _, _, files in os.walk(path):
+                total += len(files)
+            return total
+
+        count = await asyncio.to_thread(_count_rec if recursive else _count_nonrec)
+
+        return {"success": True, "msg": "Counting files successful", "count": count}
 
 
     @staticmethod
