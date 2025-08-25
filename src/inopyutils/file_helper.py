@@ -231,33 +231,45 @@ class InoFileHelper:
         }
 
     @staticmethod
-    async def move_file(from_path: Path, to_path: Path) -> dict:
-        if not from_path.exists():
-            return {
-                "success": False,
-                "msg": f"{from_path.name} not exist"
-            }
+    async def move_path(
+            from_path: Path,
+            to_path: Path,
+            *,
+            overwrite: bool = False
+    ) -> dict:
+        """
+        Move a file or directory.
+        - If 'to_path' is an existing directory, the source is moved inside it (shutil.move semantics).
+        - If 'to_path' exists and is a file, you can set overwrite=True to replace it.
+        - If moving a directory onto an existing directory path, we error (to avoid unexpected merges).
+        """
+        try:
+            if not from_path.exists():
+                return {"success": False, "msg": f"Source not found: {from_path}"}
 
-        if not from_path.is_file():
-            return {
-                "success": False,
-                "msg": f"{from_path.name} is not a file"
-            }
-
-        if not to_path.parent.exists():
             to_path.parent.mkdir(parents=True, exist_ok=True)
 
-        try:
-            await asyncio.to_thread(shutil.move, str(from_path.resolve()), str(to_path.resolve()))
+            if to_path.exists():
+                if to_path.is_dir():
+                    pass
+                else:
+                    if not overwrite:
+                        return {"success": False, "msg": f"Destination exists: {to_path}"}
+                    to_path.unlink()
+
+            await asyncio.to_thread(
+                shutil.move,
+                str(from_path.resolve()),
+                str(to_path.resolve()),
+            )
+
             return {
                 "success": True,
-                "msg": f"File {from_path} moved to {to_path}"
+                "msg": f"Moved '{from_path}' → '{to_path}'"
             }
+
         except Exception as e:
-            return {
-                "success": False,
-                "msg": f"⚠️ Failed to move {from_path.name}: {e}"
-            }
+            return {"success": False, "msg": f"⚠️ Failed to move '{from_path}' → '{to_path}': {e}"}
 
     @staticmethod
     async def count_files(path: Path, recursive: bool = False) -> dict:
