@@ -1,4 +1,6 @@
 from enum import Enum
+from typing import Any, Optional
+import re
 from inocloudreve import CloudreveClient
 
 from .file_helper import InoFileHelper
@@ -20,6 +22,42 @@ class SparkWorkflows(Enum):
     @property
     def label(self) -> str:
         return self.value[1]
+
+    @classmethod
+    def _norm(cls, s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+    @classmethod
+    def try_parse(cls, x: Any) -> Optional["SparkWorkflows"]:
+        """Return enum if parsed, else None. Accepts id (int/str), label, or name."""
+        # already enum
+        if isinstance(x, cls):
+            return x
+
+        # numeric id (int or numeric string)
+        if isinstance(x, int) or (isinstance(x, str) and x.strip().lstrip("-").isdigit()):
+            code = int(x)
+            for wf in cls:
+                if wf.id == code:
+                    return wf
+            return None
+
+        # match by label or enum name (case/format insensitive)
+        if isinstance(x, str):
+            norm_in = cls._norm(x)
+            for wf in cls:
+                if cls._norm(wf.label) == norm_in or cls._norm(wf.name) == norm_in:
+                    return wf
+
+        return None
+
+    @classmethod
+    def parse(cls, x: Any) -> "SparkWorkflows":
+        """Strict parse: returns enum or raises ValueError."""
+        wf = cls.try_parse(x)
+        if wf is None:
+            raise ValueError(f"Unknown workflow: {x!r}")
+        return wf
 
 class SparkHelper:
     @staticmethod
