@@ -55,8 +55,6 @@ class SparkWorkflows(Enum):
     def parse(cls, x: Any) -> "SparkWorkflows":
         """Strict parse: returns enum or raises ValueError."""
         wf = cls.try_parse(x)
-        if wf is None:
-            raise ValueError(f"Unknown workflow: {x!r}")
         return wf
 
 class SparkHelper:
