@@ -7,13 +7,15 @@ from .file_helper import InoFileHelper
 
 
 class SparkWorkflows(Enum):
-    CAPTION_GENERATOR       = (0, "CaptionGenerator")
-    DATASET_IMAGE_GENERATOR = (1, "DatasetImageGenerator")
-    FACE_GENERATOR          = (2, "FaceGenerator")
+    FACE_SWAPPER            = (0, "FaceSwapper")
+    FACE_GENERATOR          = (1, "FaceGen")
+    DATASET_IMAGE_GENERATOR = (2, "DatasetImageGen")
     FACE_TOOL               = (3, "FaceTool")
-    IMAGE_GENERATOR         = (4, "ImageGenerator")
-    VIDEO_GENERATOR         = (5, "VideoGenerator")
-    FACE_SWAPPER            = (6, "FaceSwapper")
+    CAPTION_GENERATOR       = (4, "CaptionGen")
+    LORA_TRAINER            = (5, "LoraTrainer")
+    IMAGE_GENERATOR         = (6, "ImageGen")
+    VIDEO_GENERATOR         = (7, "VideoGen")
+    AUDIO_GENERATOR         = (8, "AudioGen")
 
     @property
     def id(self) -> int:
