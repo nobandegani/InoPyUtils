@@ -145,15 +145,26 @@ class InoMediaHelper:
             try:
                 in_ext = input_path.suffix.lower()
                 is_jpeg_in = in_ext == ".jpg"
-                final_out = (
-                    Path(output_path)
-                    if output_path is not None
-                    else (input_path if is_jpeg_in else input_path.with_suffix(".jpg"))
-                )
+
+                if output_path is not None:
+                    final_out = Path(output_path)
+                    if final_out.suffix.lower() != ".jpg":
+                        final_out = final_out.with_suffix(".jpg")
+                else:
+                    final_out = input_path if is_jpeg_in else input_path.with_suffix(".jpg")
+
                 final_out.parent.mkdir(parents=True, exist_ok=True)
 
                 with Image.open(input_path) as img:
+                    orig_exif = img.getexif()
+                    orig_orientation = (
+                        orig_exif.get(_ORIENTATION_TAG, 1)
+                        if (orig_exif and _ORIENTATION_TAG is not None)
+                        else 1
+                    )
+
                     img = ImageOps.exif_transpose(img)
+                    orientation_changed = orig_orientation != 1
 
                     old_size: Tuple[int, int] = (img.width, img.height)
                     need_resize = img.width > max_res or img.height > max_res
@@ -163,6 +174,22 @@ class InoMediaHelper:
                         img = img.resize(new_size, resample=Resampling.LANCZOS)
                     else:
                         new_size = old_size
+
+                    if (
+                            is_jpeg_in
+                            and not need_resize
+                            and not orientation_changed
+                            and (output_path is None or final_out.resolve() == input_path.resolve())
+                    ):
+                        return {
+                            "success": True,
+                            "msg": f"✅ No changes needed: {input_path.name}",
+                            "resized": False,
+                            "converted_to_jpeg": False,
+                            "old_size": old_size,
+                            "new_size": new_size,
+                            "output": str(final_out),
+                        }
 
                     if img.mode not in ("RGB", "L"):
                         img = img.convert("RGB")
@@ -178,23 +205,30 @@ class InoMediaHelper:
                     if icc:
                         save_kwargs["icc_profile"] = icc
 
-                    exif = img.getexif()
-                    if exif and len(exif.items()) > 0:
-                        if _ORIENTATION_TAG is not None:
-                            exif[_ORIENTATION_TAG] = 1
+                    exif_after = img.getexif()
+                    if exif_after and len(exif_after.items()) > 0 and _ORIENTATION_TAG is not None:
+                        exif_after[_ORIENTATION_TAG] = 1
                         try:
-                            save_kwargs["exif"] = exif.tobytes()
+                            save_kwargs["exif"] = exif_after.tobytes()
                         except Exception:
-                            pass  # safe to ignore
+                            pass
 
                     img.save(final_out, **save_kwargs)
 
                 converted = not is_jpeg_in
-                if output_path is None and converted and input_path.exists():
+                if converted and input_path.exists():
                     try:
                         input_path.unlink()
-                    except Exception:
-                        pass  # not critical
+                    except Exception as e:
+                        return {
+                            "success": False,
+                            "msg": f"❌ Image validation failed: {input_path.name} — {e}",
+                            "resized": None,
+                            "converted_to_jpeg": None,
+                            "old_size": None,
+                            "new_size": None,
+                            "output": None,
+                        }
 
                 return {
                     "success": True,
