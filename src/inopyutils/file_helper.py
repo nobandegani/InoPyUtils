@@ -375,15 +375,13 @@ class InoFileHelper:
         if not input_path.exists() or not input_path.is_dir():
             return {"success": False, "msg": f"{input_path!s} is not a directory"}
 
-        image_valid_exts = image_valid_exts or [".png"]
-        image_convert_exts = image_convert_exts or [".webp", ".tiff", ".bmp", ".heic", ".jpeg", ".jpg"]
+        image_valid_exts = image_valid_exts or [".jpg"]
+        image_convert_exts = image_convert_exts or [".webp", ".tiff", ".bmp", ".heic", ".png", ".jpeg"]
         video_valid_exts = video_valid_exts or [".mp4"]
         video_convert_exts = video_convert_exts or [".avi", ".mov", ".mkv", ".flv"]
 
-        log_file = input_path.parent / f"{input_path.stem}_validate_log.txt"
         log_lines = []
 
-        error = False
         for file in input_path.iterdir():
             if not file.is_file():
                 continue
@@ -391,20 +389,22 @@ class InoFileHelper:
             ext = file.suffix.lower()
 
             if include_image and ext in image_valid_exts:
-                image_resize_res = InoMediaHelper.image_resize_pillow(file, file)
+                image_validate = await InoMediaHelper.image_validate_pillow(file, file)
+                if not image_validate["success"]:
+                    return image_validate
+
                 log_lines.append(
-                    image_resize_res
+                    image_validate
                 )
 
             elif include_image and ext in image_convert_exts:
-                new_file = file.with_suffix('.png')
-                image_convert_res = InoMediaHelper.image_convert_pillow(file, new_file)
+                new_file = file.with_suffix('.jpg')
+                image_validate = await InoMediaHelper.image_validate_pillow(file, new_file)
+                if not image_validate["success"]:
+                    return image_validate
+
                 log_lines.append(
-                    image_convert_res
-                )
-                image_resize_res = InoMediaHelper.image_resize_pillow(new_file, new_file)
-                log_lines.append(
-                    image_resize_res
+                    image_validate
                 )
 
             elif include_video and ext in video_valid_exts:
@@ -432,7 +432,7 @@ class InoFileHelper:
                 )
             elif not include_image and ext in image_valid_exts:
                 move_file = file.parent / "skipped_images" / file.name
-                move_file_res = await InoFileHelper.move_file(file, move_file)
+                move_file_res = await InoFileHelper.move_path(file, move_file)
                 if not move_file_res["success"]:
                     return move_file_res
                 log_lines.append(
@@ -440,7 +440,7 @@ class InoFileHelper:
                 )
             elif not include_image and ext in image_convert_exts:
                 move_file = file.parent / "skipped_images_unsupported" / file.name
-                move_file_res = await InoFileHelper.move_file(file, move_file)
+                move_file_res = await InoFileHelper.move_path(file, move_file)
                 if not move_file_res["success"]:
                     return move_file_res
                 log_lines.append(
@@ -448,7 +448,7 @@ class InoFileHelper:
                 )
             elif not include_video and ext in video_valid_exts:
                 move_file = file.parent / "skipped_videos" / file.name
-                move_file_res = await InoFileHelper.move_file(file, move_file)
+                move_file_res = await InoFileHelper.move_path(file, move_file)
                 if not move_file_res["success"]:
                     return move_file_res
                 log_lines.append(
@@ -456,7 +456,7 @@ class InoFileHelper:
                 )
             elif not include_video and ext in video_convert_exts:
                 move_file = file.parent / "skipped_videos_unsupported" / file.name
-                move_file_res = await InoFileHelper.move_file(file, move_file)
+                move_file_res = await InoFileHelper.move_path(file, move_file)
                 if not move_file_res["success"]:
                     return move_file_res
                 log_lines.append(
@@ -465,26 +465,15 @@ class InoFileHelper:
             else:
                 # -----skip all unsupported files
                 move_file = file.parent / "unsupported_files" / file.name
-                move_file_res = await InoFileHelper.move_file(file, move_file)
+                move_file_res = await InoFileHelper.move_path(file, move_file)
                 if not move_file_res["success"]:
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped unsupported file: {file.name}"
                 )
 
-        if log_lines:
-            with log_file.open("w", encoding="utf-8") as f:
-                for entry in log_lines:
-                    if isinstance(entry, str):
-                        entry = {"success": True, "msg": entry}
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        if error:
-            return {
-                "success": False,
-                "msg": f"Failed to validate files, see log file: {log_file}"
-            }
-
         return {
             "success": True,
-            "msg": f"📂 Validating files completed"
+            "msg": f"📂 Validating files completed",
+            "log_lines": log_lines
         }

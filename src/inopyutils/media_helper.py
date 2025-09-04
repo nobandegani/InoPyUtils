@@ -1,9 +1,11 @@
 import asyncio
 import sys
 from pathlib import Path
+from typing import Dict, Any, Tuple
+from PIL import Image, ImageOps, ExifTags
+from PIL.Image import Resampling
 
 from pillow_heif import register_heif_opener
-from PIL import Image
 
 import cv2
 import shutil
@@ -123,62 +125,99 @@ class InoMediaHelper:
                 "msg": f"❌ Image conversion error: {e}",
             }
 
-    @staticmethod
-    def image_convert_pillow(input_path: Path, output_path: Path) -> dict:
-        try:
-            img = Image.open(input_path)
-            img.save(output_path, format="PNG")
-            img.close()
-
-            input_path.unlink()
-
-            return {
-                "success": True,
-                "msg": f"✅ Converted {input_path.name}",
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "msg": f"❌ Image conversion failed: {input_path.name} — {e}",
-            }
 
     @staticmethod
-    def image_resize_pillow(input_path: Path, output_path: Path, max_res: int = 3200) -> dict:
-        try:
-            img = Image.open(input_path)
+    async def image_validate_pillow(
+            input_path: Path,
+            output_path: Path | None = None,
+            max_res: int = 3200,
+            jpg_quality: int = 92
+    ) -> Dict[str, Any]:
+        """
+        - Fix EXIF rotation
+        - Resize only if larger than max_res
+        - Save as JPEG if not already JPEG (overwrites if already JPEG)
+        - Preserve EXIF + ICC profile where possible
+        """
+        _ORIENTATION_TAG = {v: k for k, v in ExifTags.TAGS.items()}.get("Orientation")
 
-            if img.width > max_res or img.height > max_res:
-                temp_output = output_path.with_name(output_path.stem + "_converted.png")
-                scale = min(max_res / img.width, max_res / img.height)
-                old_size = (int(img.width), int(img.height))
-                new_size = (int(img.width * scale), int(img.height * scale))
+        def _work() -> Dict[str, Any]:
+            try:
+                in_ext = input_path.suffix.lower()
+                is_jpeg_in = in_ext == ".jpg"
+                final_out = (
+                    Path(output_path)
+                    if output_path is not None
+                    else (input_path if is_jpeg_in else input_path.with_suffix(".jpg"))
+                )
+                final_out.parent.mkdir(parents=True, exist_ok=True)
 
-                img = img.resize(new_size, Image.LANCZOS)
-                img.save(temp_output, format="PNG")
-                img.close()
+                with Image.open(input_path) as img:
+                    img = ImageOps.exif_transpose(img)
 
-                shutil.move(temp_output, output_path)
+                    old_size: Tuple[int, int] = (img.width, img.height)
+                    need_resize = img.width > max_res or img.height > max_res
+                    if need_resize:
+                        scale = min(max_res / img.width, max_res / img.height)
+                        new_size = (int(img.width * scale), int(img.height * scale))
+                        img = img.resize(new_size, resample=Resampling.LANCZOS)
+                    else:
+                        new_size = old_size
+
+                    if img.mode not in ("RGB", "L"):
+                        img = img.convert("RGB")
+
+                    save_kwargs: Dict[str, Any] = {
+                        "format": "JPEG",
+                        "quality": jpg_quality,
+                        "optimize": True,
+                        "progressive": True,
+                    }
+
+                    icc = img.info.get("icc_profile")
+                    if icc:
+                        save_kwargs["icc_profile"] = icc
+
+                    exif = img.getexif()
+                    if exif and len(exif.items()) > 0:
+                        if _ORIENTATION_TAG is not None:
+                            exif[_ORIENTATION_TAG] = 1
+                        try:
+                            save_kwargs["exif"] = exif.tobytes()
+                        except Exception:
+                            pass  # safe to ignore
+
+                    img.save(final_out, **save_kwargs)
+
+                converted = not is_jpeg_in
+                if output_path is None and converted and input_path.exists():
+                    try:
+                        input_path.unlink()
+                    except Exception:
+                        pass  # not critical
 
                 return {
                     "success": True,
-                    "msg": f"✅ Converted {input_path.name}",
+                    "msg": f"✅ Validated {input_path.name}",
+                    "resized": need_resize,
+                    "converted_to_jpeg": converted,
                     "old_size": old_size,
                     "new_size": new_size,
+                    "output": str(final_out),
                 }
-            else:
+
+            except Exception as e:
                 return {
-                    "success": True,
-                    "msg": f"🖼️ Resize image skipped: {input_path.name}: {img.width}x{img.height}",
+                    "success": False,
+                    "msg": f"❌ Image validation failed: {input_path.name} — {e}",
+                    "resized": None,
+                    "converted_to_jpeg": None,
                     "old_size": None,
                     "new_size": None,
+                    "output": None,
                 }
-        except Exception as e:
-            return {
-                "success": False,
-                "msg": f"❌ Image resize failed: {input_path.name} — {e}",
-                "old_size": None,
-                "new_size": None,
-            }
+
+        return await asyncio.to_thread(_work)
 
     @staticmethod
     def validate_video_res_fps(input_path: Path, max_res: int = 2560, max_fps: int = 30) -> dict:
