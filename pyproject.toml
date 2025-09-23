@@ -21,7 +21,8 @@ dependencies = [
     "pillow",
     "pillow_heif",
     "opencv-python",
-    "inocloudreve"
+    "inocloudreve",
+    "aioboto3"
 ]
 license = "MPL-2.0"
 license-files = ["LICENSE"]
