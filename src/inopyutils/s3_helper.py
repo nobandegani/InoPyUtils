@@ -8,7 +8,7 @@ import logging
 import random
 
 
-class S3Client:
+class InoS3Helper:
     """
     Async S3 client class that wraps aiboto3 functionality
     
@@ -21,7 +21,7 @@ class S3Client:
     - And other S3-compatible services
     
     Example usage with Backblaze B2:
-        s3_client = S3Client(
+        s3_client = InoS3Helper(
             aws_access_key_id='your_b2_key_id',
             aws_secret_access_key='your_b2_application_key',
             endpoint_url='https://s3.us-west-000.backblazeb2.com',
