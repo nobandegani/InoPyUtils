@@ -352,6 +352,113 @@ class InoS3Helper:
             logging.error(f"Error deleting object: {str(e)}")
             return False
 
+    async def download_folder(
+            self,
+            s3_folder_key: str,
+            local_folder_path: str,
+            bucket_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Download an entire folder from S3, preserving directory structure locally
+
+        Args:
+            s3_folder_key: S3 key (path) of the folder to download (should end with '/')
+            local_folder_path: Local directory path where the folder will be saved
+            bucket_name: S3 bucket name (uses default if not provided)
+
+        Returns:
+            Dict[str, Any]: Status information with success/failure counts and details
+        """
+        bucket = bucket_name or self.bucket_name
+        if not bucket:
+            raise ValueError("Bucket name must be provided either during initialization or method call")
+
+        if not s3_folder_key.endswith('/'):
+            s3_folder_key += '/'
+
+        local_folder = Path(local_folder_path)
+        local_folder.mkdir(parents=True, exist_ok=True)
+
+        result = {
+            'success': True,
+            'total_files': 0,
+            'downloaded_successfully': 0,
+            'failed_downloads': 0,
+            'errors': []
+        }
+
+        try:
+            all_objects = []
+            continuation_token = None
+            
+            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+                while True:
+                    list_params = {
+                        'Bucket': bucket,
+                        'Prefix': s3_folder_key,
+                        'MaxKeys': 1000
+                    }
+                    
+                    if continuation_token:
+                        list_params['ContinuationToken'] = continuation_token
+
+                    response = await s3.list_objects_v2(**list_params)
+
+                    if 'Contents' in response:
+                        all_objects.extend(response['Contents'])
+
+                    if not response.get('IsTruncated', False):
+                        break
+                    
+                    continuation_token = response.get('NextContinuationToken')
+
+            result['total_files'] = len(all_objects)
+            
+            # Filter out directory markers (keys ending with '/')
+            file_objects = [obj for obj in all_objects if not obj['Key'].endswith('/')]
+            result['total_files'] = len(file_objects)
+            
+            logging.info(f"Found {result['total_files']} files to download from s3://{bucket}/{s3_folder_key}")
+
+            # Download each file
+            for obj in file_objects:
+                s3_key = obj['Key']
+
+                relative_path = s3_key[len(s3_folder_key):]
+                local_file_path = local_folder / relative_path
+                
+                try:
+                    success = await self.download_file(s3_key, str(local_file_path), bucket_name)
+                    
+                    if success:
+                        result['downloaded_successfully'] += 1
+                    else:
+                        result['failed_downloads'] += 1
+                        result['errors'].append(f"Failed to download: {s3_key}")
+                        
+                except Exception as e:
+                    result['failed_downloads'] += 1
+                    error_msg = f"Error downloading {s3_key}: {str(e)}"
+                    result['errors'].append(error_msg)
+                    logging.error(error_msg)
+
+            result['success'] = result['failed_downloads'] == 0
+            
+            if result['success']:
+                logging.info(f"Successfully downloaded folder s3://{bucket}/{s3_folder_key} to {local_folder_path}")
+                logging.info(f"Downloaded {result['downloaded_successfully']} files")
+            else:
+                logging.warning(f"Folder download completed with {result['failed_downloads']} failures")
+                logging.warning(f"Downloaded {result['downloaded_successfully']}/{result['total_files']} files")
+
+        except Exception as e:
+            error_msg = f"Error downloading folder: {str(e)}"
+            logging.error(error_msg)
+            result['success'] = False
+            result['errors'].append(error_msg)
+
+        return result
+
     async def object_exists(
             self,
             s3_key: str,
