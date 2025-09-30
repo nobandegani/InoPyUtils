@@ -71,9 +71,9 @@ class InoS3Helper:
 
     async def _retry_operation(
             self,
-            operation: Callable[[], Awaitable[bool]],
+            operation: Callable[[], Awaitable[Dict[str, Any]]],
             operation_name: str
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """
         Retry an operation with exponential backoff
         
@@ -82,21 +82,35 @@ class InoS3Helper:
             operation_name: Name of the operation for logging
             
         Returns:
-            bool: True if operation succeeded, False if all retries failed
+            Dict with "success", "msg", and optional "error_code"
         """
         last_exception = None
         
         for attempt in range(self.retries + 1):  # +1 for initial attempt
             try:
-                return await operation()
+                result = await operation()
+                if result.get("success", False):
+                    return result
+                # If operation returns unsuccessful result, don't retry
+                return result
             except (FileNotFoundError, NoCredentialsError, ValueError) as e:
-                logging.error(f"{operation_name} failed with non-retryable error: {str(e)}")
-                return False
+                error_msg = f"❌ {operation_name} failed with non-retryable error: {str(e)}"
+                logging.error(error_msg)
+                return {
+                    "success": False,
+                    "msg": error_msg,
+                    "error_code": type(e).__name__
+                }
             except ClientError as e:
                 error_code = e.response.get('Error', {}).get('Code', '')
                 if error_code in ['NoSuchBucket', 'NoSuchKey', 'AccessDenied', 'InvalidAccessKeyId']:
-                    logging.error(f"{operation_name} failed with non-retryable client error {error_code}: {str(e)}")
-                    return False
+                    error_msg = f"❌ {operation_name} failed with non-retryable client error {error_code}: {str(e)}"
+                    logging.error(error_msg)
+                    return {
+                        "success": False,
+                        "msg": error_msg,
+                        "error_code": error_code
+                    }
                 
                 last_exception = e
                 if attempt < self.retries:
@@ -104,7 +118,13 @@ class InoS3Helper:
                     logging.warning(f"{operation_name} attempt {attempt + 1} failed with {error_code}, retrying in {wait_time:.2f}s: {str(e)}")
                     await asyncio.sleep(wait_time)
                 else:
-                    logging.error(f"{operation_name} failed after {self.retries + 1} attempts with client error {error_code}: {str(e)}")
+                    error_msg = f"❌ {operation_name} failed after {self.retries + 1} attempts with client error {error_code}: {str(e)}"
+                    logging.error(error_msg)
+                    return {
+                        "success": False,
+                        "msg": error_msg,
+                        "error_code": error_code
+                    }
             except Exception as e:
                 last_exception = e
                 if attempt < self.retries:
@@ -112,9 +132,20 @@ class InoS3Helper:
                     logging.warning(f"{operation_name} attempt {attempt + 1} failed, retrying in {wait_time:.2f}s: {str(e)}")
                     await asyncio.sleep(wait_time)
                 else:
-                    logging.error(f"{operation_name} failed after {self.retries + 1} attempts: {str(e)}")
+                    error_msg = f"❌ {operation_name} failed after {self.retries + 1} attempts: {str(e)}"
+                    logging.error(error_msg)
+                    return {
+                        "success": False,
+                        "msg": error_msg,
+                        "error_code": type(e).__name__
+                    }
         
-        return False
+        # This should never be reached, but just in case
+        return {
+            "success": False,
+            "msg": f"❌ {operation_name} failed unexpectedly",
+            "error_code": "UnknownError"
+        }
 
     async def upload_file(
             self,
@@ -122,7 +153,7 @@ class InoS3Helper:
             s3_key: str,
             bucket_name: Optional[str] = None,
             extra_args: Optional[Dict[str, Any]] = None
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """
         Upload a file to S3 with automatic retry on failure
 
@@ -133,13 +164,25 @@ class InoS3Helper:
             extra_args: Extra arguments for the upload (e.g., metadata, ACL)
 
         Returns:
-            bool: True if upload successful, False otherwise
+            Dict with "success", "msg", "s3_key", "bucket", and optional "error_code"
         """
         bucket = bucket_name or self.bucket_name
         if not bucket:
-            raise ValueError("Bucket name must be provided either during initialization or method call")
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket"
+            }
 
-        async def _upload_operation() -> bool:
+        # Check if local file exists
+        if not Path(local_file_path).exists():
+            return {
+                "success": False,
+                "msg": f"❌ Local file not found: {local_file_path}",
+                "error_code": "FileNotFound"
+            }
+
+        async def _upload_operation() -> Dict[str, Any]:
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
                 await s3.upload_file(
                     local_file_path,
@@ -147,8 +190,15 @@ class InoS3Helper:
                     s3_key,
                     ExtraArgs=extra_args or {}
                 )
-                logging.info(f"Successfully uploaded {local_file_path} to s3://{bucket}/{s3_key}")
-                return True
+                success_msg = f"✅ Successfully uploaded {Path(local_file_path).name} to s3://{bucket}/{s3_key}"
+                logging.info(success_msg)
+                return {
+                    "success": True,
+                    "msg": success_msg,
+                    "s3_key": s3_key,
+                    "bucket": bucket,
+                    "local_file": local_file_path
+                }
 
         return await self._retry_operation(
             _upload_operation,
@@ -162,7 +212,7 @@ class InoS3Helper:
             bucket_name: Optional[str] = None,
             content_type: str = 'application/octet-stream',
             metadata: Optional[Dict[str, str]] = None
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """
         Upload a file using put_object for more control over metadata with automatic retry on failure
 
@@ -174,13 +224,25 @@ class InoS3Helper:
             metadata: Custom metadata to attach to the object
 
         Returns:
-            bool: True if upload successful, False otherwise
+            Dict with "success", "msg", "s3_key", "bucket", "content_type", and optional "error_code"
         """
         bucket = bucket_name or self.bucket_name
         if not bucket:
-            raise ValueError("Bucket name must be provided either during initialization or method call")
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket"
+            }
 
-        async def _upload_operation() -> bool:
+        # Check if local file exists
+        if not Path(local_file_path).exists():
+            return {
+                "success": False,
+                "msg": f"❌ Local file not found: {local_file_path}",
+                "error_code": "FileNotFound"
+            }
+
+        async def _upload_operation() -> Dict[str, Any]:
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
                 async with aiofiles.open(local_file_path, 'rb') as file:
                     file_content = await file.read()
@@ -197,8 +259,17 @@ class InoS3Helper:
 
                     await s3.put_object(**put_args)
 
-                logging.info(f"Successfully uploaded {local_file_path} to s3://{bucket}/{s3_key}")
-                return True
+                success_msg = f"✅ Successfully uploaded {Path(local_file_path).name} to s3://{bucket}/{s3_key} with content type {content_type}"
+                logging.info(success_msg)
+                return {
+                    "success": True,
+                    "msg": success_msg,
+                    "s3_key": s3_key,
+                    "bucket": bucket,
+                    "content_type": content_type,
+                    "local_file": local_file_path,
+                    "metadata": metadata or {}
+                }
 
         return await self._retry_operation(
             _upload_operation,
@@ -210,7 +281,7 @@ class InoS3Helper:
             s3_key: str,
             local_file_path: str,
             bucket_name: Optional[str] = None
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """
         Download a file from S3 with automatic retry on failure
 
@@ -220,19 +291,30 @@ class InoS3Helper:
             bucket_name: S3 bucket name (uses default if not provided)
 
         Returns:
-            bool: True if download successful, False otherwise
+            Dict with "success", "msg", "s3_key", "bucket", "local_file", and optional "error_code"
         """
         bucket = bucket_name or self.bucket_name
         if not bucket:
-            raise ValueError("Bucket name must be provided either during initialization or method call")
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket"
+            }
 
-        async def _download_operation() -> bool:
+        async def _download_operation() -> Dict[str, Any]:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
 
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
                 await s3.download_file(bucket, s3_key, local_file_path)
-                logging.info(f"Successfully downloaded s3://{bucket}/{s3_key} to {local_file_path}")
-                return True
+                success_msg = f"✅ Successfully downloaded s3://{bucket}/{s3_key} to {local_file_path}"
+                logging.info(success_msg)
+                return {
+                    "success": True,
+                    "msg": success_msg,
+                    "s3_key": s3_key,
+                    "bucket": bucket,
+                    "local_file": local_file_path
+                }
 
         return await self._retry_operation(
             _download_operation,
@@ -244,7 +326,7 @@ class InoS3Helper:
             s3_key: str,
             local_file_path: str,
             bucket_name: Optional[str] = None
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """
         Download a file using get_object for more control with automatic retry on failure
 
@@ -254,13 +336,17 @@ class InoS3Helper:
             bucket_name: S3 bucket name (uses default if not provided)
 
         Returns:
-            bool: True if download successful, False otherwise
+            Dict with "success", "msg", "s3_key", "bucket", "local_file", and optional "error_code"
         """
         bucket = bucket_name or self.bucket_name
         if not bucket:
-            raise ValueError("Bucket name must be provided either during initialization or method call")
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket"
+            }
 
-        async def _download_operation() -> bool:
+        async def _download_operation() -> Dict[str, Any]:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
 
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
@@ -270,8 +356,15 @@ class InoS3Helper:
                     async for chunk in response['Body'].iter_chunks():
                         await file.write(chunk)
 
-                logging.info(f"Successfully downloaded s3://{bucket}/{s3_key} to {local_file_path}")
-                return True
+                success_msg = f"✅ Successfully downloaded s3://{bucket}/{s3_key} to {local_file_path}"
+                logging.info(success_msg)
+                return {
+                    "success": True,
+                    "msg": success_msg,
+                    "s3_key": s3_key,
+                    "bucket": bucket,
+                    "local_file": local_file_path
+                }
 
         return await self._retry_operation(
             _download_operation,
@@ -283,7 +376,7 @@ class InoS3Helper:
             prefix: str = "",
             bucket_name: Optional[str] = None,
             max_keys: int = 1000
-    ) -> list:
+    ) -> Dict[str, Any]:
         """
         List objects in S3 bucket
 
@@ -293,11 +386,17 @@ class InoS3Helper:
             max_keys: Maximum number of objects to return
 
         Returns:
-            list: List of object information dictionaries
+            Dict with "success", "msg", "objects", "count", and optional "error_code"
         """
         bucket = bucket_name or self.bucket_name
         if not bucket:
-            raise ValueError("Bucket name must be provided either during initialization or method call")
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket",
+                "objects": [],
+                "count": 0
+            }
 
         try:
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
@@ -317,17 +416,33 @@ class InoS3Helper:
                             'ETag': obj['ETag']
                         })
 
-                return objects
+                success_msg = f"✅ Found {len(objects)} objects in s3://{bucket} with prefix '{prefix}'"
+                logging.info(success_msg)
+                return {
+                    "success": True,
+                    "msg": success_msg,
+                    "objects": objects,
+                    "count": len(objects),
+                    "bucket": bucket,
+                    "prefix": prefix
+                }
 
         except Exception as e:
-            logging.error(f"Error listing objects: {str(e)}")
-            return []
+            error_msg = f"❌ Error listing objects in s3://{bucket}: {str(e)}"
+            logging.error(error_msg)
+            return {
+                "success": False,
+                "msg": error_msg,
+                "error_code": type(e).__name__,
+                "objects": [],
+                "count": 0
+            }
 
     async def delete_object(
             self,
             s3_key: str,
             bucket_name: Optional[str] = None
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """
         Delete an object from S3
 
@@ -336,21 +451,38 @@ class InoS3Helper:
             bucket_name: S3 bucket name (uses default if not provided)
 
         Returns:
-            bool: True if deletion successful, False otherwise
+            Dict with "success", "msg", "s3_key", "bucket", and optional "error_code"
         """
         bucket = bucket_name or self.bucket_name
         if not bucket:
-            raise ValueError("Bucket name must be provided either during initialization or method call")
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket"
+            }
 
         try:
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
                 await s3.delete_object(Bucket=bucket, Key=s3_key)
-                logging.info(f"Successfully deleted s3://{bucket}/{s3_key}")
-                return True
+                success_msg = f"✅ Successfully deleted s3://{bucket}/{s3_key}"
+                logging.info(success_msg)
+                return {
+                    "success": True,
+                    "msg": success_msg,
+                    "s3_key": s3_key,
+                    "bucket": bucket
+                }
 
         except Exception as e:
-            logging.error(f"Error deleting object: {str(e)}")
-            return False
+            error_msg = f"❌ Error deleting s3://{bucket}/{s3_key}: {str(e)}"
+            logging.error(error_msg)
+            return {
+                "success": False,
+                "msg": error_msg,
+                "error_code": type(e).__name__,
+                "s3_key": s3_key,
+                "bucket": bucket
+            }
 
     async def download_folder(
             self,
@@ -371,7 +503,15 @@ class InoS3Helper:
         """
         bucket = bucket_name or self.bucket_name
         if not bucket:
-            raise ValueError("Bucket name must be provided either during initialization or method call")
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket",
+                "total_files": 0,
+                "downloaded_successfully": 0,
+                "failed_downloads": 0,
+                "errors": []
+            }
 
         if not s3_folder_key.endswith('/'):
             s3_folder_key += '/'
@@ -381,10 +521,14 @@ class InoS3Helper:
 
         result = {
             'success': True,
+            'msg': "",
             'total_files': 0,
             'downloaded_successfully': 0,
             'failed_downloads': 0,
-            'errors': []
+            'errors': [],
+            'bucket': bucket,
+            's3_folder_key': s3_folder_key,
+            'local_folder_path': local_folder_path
         }
 
         try:
@@ -428,13 +572,13 @@ class InoS3Helper:
                 local_file_path = local_folder / relative_path
                 
                 try:
-                    success = await self.download_file(s3_key, str(local_file_path), bucket_name)
+                    download_result = await self.download_file(s3_key, str(local_file_path), bucket_name)
                     
-                    if success:
+                    if download_result.get('success', False):
                         result['downloaded_successfully'] += 1
                     else:
                         result['failed_downloads'] += 1
-                        result['errors'].append(f"Failed to download: {s3_key}")
+                        result['errors'].append(f"Failed to download {s3_key}: {download_result.get('msg', 'Unknown error')}")
                         
                 except Exception as e:
                     result['failed_downloads'] += 1
@@ -445,16 +589,19 @@ class InoS3Helper:
             result['success'] = result['failed_downloads'] == 0
             
             if result['success']:
-                logging.info(f"Successfully downloaded folder s3://{bucket}/{s3_folder_key} to {local_folder_path}")
-                logging.info(f"Downloaded {result['downloaded_successfully']} files")
+                result['msg'] = f"✅ Successfully downloaded folder s3://{bucket}/{s3_folder_key} to {local_folder_path} ({result['downloaded_successfully']} files)"
+                logging.info(result['msg'])
             else:
-                logging.warning(f"Folder download completed with {result['failed_downloads']} failures")
-                logging.warning(f"Downloaded {result['downloaded_successfully']}/{result['total_files']} files")
+                result['msg'] = f"❌ Folder download completed with {result['failed_downloads']} failures. Downloaded {result['downloaded_successfully']}/{result['total_files']} files"
+                result['error_code'] = "PartialFailure"
+                logging.warning(result['msg'])
 
         except Exception as e:
-            error_msg = f"Error downloading folder: {str(e)}"
+            error_msg = f"❌ Error downloading folder s3://{bucket}/{s3_folder_key}: {str(e)}"
             logging.error(error_msg)
             result['success'] = False
+            result['msg'] = error_msg
+            result['error_code'] = type(e).__name__
             result['errors'].append(error_msg)
 
         return result
@@ -463,7 +610,7 @@ class InoS3Helper:
             self,
             s3_key: str,
             bucket_name: Optional[str] = None
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """
         Check if an object exists in S3
 
@@ -472,24 +619,57 @@ class InoS3Helper:
             bucket_name: S3 bucket name (uses default if not provided)
 
         Returns:
-            bool: True if object exists, False otherwise
+            Dict with "success", "msg", "exists", "s3_key", "bucket", and optional "error_code"
         """
         bucket = bucket_name or self.bucket_name
         if not bucket:
-            raise ValueError("Bucket name must be provided either during initialization or method call")
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket",
+                "exists": False
+            }
 
         try:
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
                 await s3.head_object(Bucket=bucket, Key=s3_key)
-                return True
+                return {
+                    "success": True,
+                    "msg": f"✅ Object s3://{bucket}/{s3_key} exists",
+                    "exists": True,
+                    "s3_key": s3_key,
+                    "bucket": bucket
+                }
 
         except ClientError as e:
             error_code = e.response['Error']['Code']
             if error_code == 'NoSuchKey' or error_code == '404':
-                return False
+                return {
+                    "success": True,
+                    "msg": f"✅ Object s3://{bucket}/{s3_key} does not exist",
+                    "exists": False,
+                    "s3_key": s3_key,
+                    "bucket": bucket
+                }
             else:
-                logging.error(f"Error checking object existence: {e}")
-                return False
+                error_msg = f"❌ Error checking object existence s3://{bucket}/{s3_key}: {e}"
+                logging.error(error_msg)
+                return {
+                    "success": False,
+                    "msg": error_msg,
+                    "error_code": error_code,
+                    "exists": False,
+                    "s3_key": s3_key,
+                    "bucket": bucket
+                }
         except Exception as e:
-            logging.error(f"Error checking object existence: {str(e)}")
-            return False
+            error_msg = f"❌ Error checking object existence s3://{bucket}/{s3_key}: {str(e)}"
+            logging.error(error_msg)
+            return {
+                "success": False,
+                "msg": error_msg,
+                "error_code": type(e).__name__,
+                "exists": False,
+                "s3_key": s3_key,
+                "bucket": bucket
+            }
