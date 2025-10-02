@@ -100,26 +100,6 @@ await InoMediaHelper.video_convert_ffmpeg(
 )
 ```
 
-### ⚡ AI Workflow Management (`SparkHelper`)
-- **Workflow Enumeration**: Predefined AI/ML workflows (FaceSwapper, ImageGen, VideoGen, etc.)
-- **Batch Management**: Automatic batch folder creation and organization
-- **Cloud Integration**: Integration with Cloudreve storage systems
-- **Storage Policies**: Default storage policy management for AI workflows
-
-```python
-from inopyutils import SparkHelper, SparkWorkflows
-
-# Parse workflow from various inputs
-workflow = SparkWorkflows.parse("FaceSwapper")  # or use ID: 0
-
-# Get batch folder for organized processing
-batch_info = await SparkHelper.get_batch_folder(
-    cloud_client, 
-    workflow, 
-    "creator_name"
-)
-```
-
 ### ⚙️ Configuration Management (`InoConfigHelper`)
 - **INI File Support**: Read and write INI-based configuration files
 - **Type Safety**: Dedicated methods for strings and booleans
