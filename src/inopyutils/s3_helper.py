@@ -606,6 +606,174 @@ class InoS3Helper:
 
         return result
 
+    async def upload_folder(
+            self,
+            s3_folder_key: str,
+            local_folder_path: str,
+            bucket_name: Optional[str] = None,
+            max_concurrent: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Upload an entire folder to S3, preserving directory structure
+        Either all files upload successfully or the operation fails (bullet proof)
+
+        Args:
+            s3_folder_key: S3 key (path) prefix where the folder will be uploaded (should end with '/')
+            local_folder_path: Local directory path to upload
+            bucket_name: S3 bucket name (uses default if not provided)
+            max_concurrent: Maximum number of concurrent uploads (default: 5)
+
+        Returns:
+            Dict[str, Any]: Status information with success/failure counts and details
+        """
+        bucket = bucket_name or self.bucket_name
+        if not bucket:
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket",
+                "total_files": 0,
+                "uploaded_successfully": 0,
+                "failed_uploads": 0,
+                "errors": []
+            }
+
+        # Validate local folder exists
+        local_folder = Path(local_folder_path)
+        if not local_folder.exists():
+            return {
+                "success": False,
+                "msg": f"❌ Local folder not found: {local_folder_path}",
+                "error_code": "FolderNotFound",
+                "total_files": 0,
+                "uploaded_successfully": 0,
+                "failed_uploads": 0,
+                "errors": []
+            }
+
+        if not local_folder.is_dir():
+            return {
+                "success": False,
+                "msg": f"❌ Path is not a directory: {local_folder_path}",
+                "error_code": "NotADirectory",
+                "total_files": 0,
+                "uploaded_successfully": 0,
+                "failed_uploads": 0,
+                "errors": []
+            }
+
+        # Ensure s3_folder_key ends with '/'
+        if not s3_folder_key.endswith('/'):
+            s3_folder_key += '/'
+
+        result = {
+            'success': True,
+            'msg': "",
+            'total_files': 0,
+            'uploaded_successfully': 0,
+            'failed_uploads': 0,
+            'errors': [],
+            'bucket': bucket,
+            's3_folder_key': s3_folder_key,
+            'local_folder_path': local_folder_path
+        }
+
+        try:
+            # Find all files in the local folder recursively
+            all_files = []
+            for file_path in local_folder.rglob('*'):
+                if file_path.is_file():
+                    # Get relative path from the base folder
+                    relative_path = file_path.relative_to(local_folder)
+                    # Convert Windows paths to forward slashes for S3
+                    s3_key = s3_folder_key + str(relative_path).replace('\\', '/')
+                    all_files.append({
+                        'local_path': str(file_path),
+                        's3_key': s3_key,
+                        'relative_path': str(relative_path)
+                    })
+
+            result['total_files'] = len(all_files)
+            
+            if result['total_files'] == 0:
+                result['msg'] = f"✅ No files found in {local_folder_path} to upload"
+                logging.info(result['msg'])
+                return result
+
+            logging.info(f"Found {result['total_files']} files to upload from {local_folder_path} to s3://{bucket}/{s3_folder_key}")
+
+            # Upload files concurrently with semaphore to limit concurrent operations
+            semaphore = asyncio.Semaphore(max_concurrent)
+            
+            async def _upload_single_file_with_semaphore(file_info: Dict[str, str]) -> Dict[str, Any]:
+                """Upload a single file with semaphore control"""
+                async with semaphore:
+                    try:
+                        upload_result = await self.upload_file(
+                            local_file_path=file_info['local_path'],
+                            s3_key=file_info['s3_key'],
+                            bucket_name=bucket
+                        )
+                        return {
+                            'file_info': file_info,
+                            'result': upload_result
+                        }
+                    except Exception as e:
+                        return {
+                            'file_info': file_info,
+                            'result': {
+                                'success': False,
+                                'msg': f"Exception during upload: {str(e)}",
+                                'error_code': type(e).__name__
+                            }
+                        }
+
+            # Execute all uploads concurrently
+            upload_tasks = [_upload_single_file_with_semaphore(file_info) for file_info in all_files]
+            upload_results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+            # Process results
+            for upload_result in upload_results:
+                if isinstance(upload_result, Exception):
+                    result['failed_uploads'] += 1
+                    error_msg = f"Upload task failed with exception: {str(upload_result)}"
+                    result['errors'].append(error_msg)
+                    logging.error(error_msg)
+                    continue
+
+                file_info = upload_result['file_info']
+                upload_outcome = upload_result['result']
+                
+                if upload_outcome.get('success', False):
+                    result['uploaded_successfully'] += 1
+                    logging.debug(f"Successfully uploaded {file_info['relative_path']}")
+                else:
+                    result['failed_uploads'] += 1
+                    error_msg = f"Failed to upload {file_info['relative_path']}: {upload_outcome.get('msg', 'Unknown error')}"
+                    result['errors'].append(error_msg)
+                    logging.error(error_msg)
+
+            # Determine final success status - bullet proof: all or nothing
+            result['success'] = result['failed_uploads'] == 0
+            
+            if result['success']:
+                result['msg'] = f"✅ Successfully uploaded folder {local_folder_path} to s3://{bucket}/{s3_folder_key} ({result['uploaded_successfully']} files)"
+                logging.info(result['msg'])
+            else:
+                result['msg'] = f"❌ Folder upload failed with {result['failed_uploads']} failures. Uploaded {result['uploaded_successfully']}/{result['total_files']} files"
+                result['error_code'] = "PartialFailure"
+                logging.error(result['msg'])
+
+        except Exception as e:
+            error_msg = f"❌ Error uploading folder {local_folder_path} to s3://{bucket}/{s3_folder_key}: {str(e)}"
+            logging.error(error_msg)
+            result['success'] = False
+            result['msg'] = error_msg
+            result['error_code'] = type(e).__name__
+            result['errors'].append(error_msg)
+
+        return result
+
     async def object_exists(
             self,
             s3_key: str,
