@@ -1,31 +1,39 @@
 [build-system]
-requires = ["setuptools >= 77.0.3"]
+requires = ["setuptools >= 61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "inopyutils"
-version = "0.2.6"
+version = "0.2.7"
 authors = [
-  { name="Inoland", email="contact@inoland.net" },
+    { name = "Inoland", email = "contact@inoland.net" },
 ]
-description = "Python utils for specific usecase"
+description = "A comprehensive Python utility library for S3 storage, media processing, file management, configuration, and logging"
 readme = "README.md"
 requires-python = ">=3.9"
+keywords = ["utilities", "s3", "media", "file-management", "logging", "configuration"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
 ]
 dependencies = [
     "pillow",
     "pillow_heif",
     "opencv-python",
     "inocloudreve",
-    "aioboto3"
+    "aioboto3",
+    "aiofiles",
+    "botocore",
 ]
-license = "MPL-2.0"
-license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
 where  = ["src"]
