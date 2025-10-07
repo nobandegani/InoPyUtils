@@ -69,6 +69,25 @@ class InoS3Helper:
         else:
             self.session = Session(region_name=region_name)
 
+    def _validate_bucket(self, bucket_name: Optional[str]) -> Optional[Dict[str, Any]]:
+        """
+        Validate bucket name and return error dict if invalid, None if valid
+        
+        Args:
+            bucket_name: Bucket name to validate
+            
+        Returns:
+            None if valid, error dict if invalid
+        """
+        bucket = bucket_name or self.bucket_name
+        if not bucket:
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket"
+            }
+        return None
+
     async def _retry_operation(
             self,
             operation: Callable[[], Awaitable[Dict[str, Any]]],
@@ -245,12 +264,10 @@ class InoS3Helper:
         async def _upload_operation() -> Dict[str, Any]:
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
                 async with aiofiles.open(local_file_path, 'rb') as file:
-                    file_content = await file.read()
-
                     put_args = {
                         'Bucket': bucket,
                         'Key': s3_key,
-                        'Body': file_content,
+                        'Body': file,  # Stream the file directly instead of loading into memory
                         'ContentType': content_type
                     }
 
@@ -398,7 +415,17 @@ class InoS3Helper:
                 "count": 0
             }
 
-        try:
+        # Input validation
+        if max_keys <= 0 or max_keys > 1000:
+            return {
+                "success": False,
+                "msg": "❌ max_keys must be between 1 and 1000",
+                "error_code": "InvalidParameter",
+                "objects": [],
+                "count": 0
+            }
+
+        async def _list_operation() -> Dict[str, Any]:
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
                 response = await s3.list_objects_v2(
                     Bucket=bucket,
@@ -427,16 +454,10 @@ class InoS3Helper:
                     "prefix": prefix
                 }
 
-        except Exception as e:
-            error_msg = f"❌ Error listing objects in s3://{bucket}: {str(e)}"
-            logging.error(error_msg)
-            return {
-                "success": False,
-                "msg": error_msg,
-                "error_code": type(e).__name__,
-                "objects": [],
-                "count": 0
-            }
+        return await self._retry_operation(
+            _list_operation,
+            f"list_objects(s3://{bucket}, prefix='{prefix}')"
+        )
 
     async def delete_object(
             self,
@@ -461,7 +482,7 @@ class InoS3Helper:
                 "error_code": "MissingBucket"
             }
 
-        try:
+        async def _delete_operation() -> Dict[str, Any]:
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
                 await s3.delete_object(Bucket=bucket, Key=s3_key)
                 success_msg = f"✅ Successfully deleted s3://{bucket}/{s3_key}"
@@ -473,22 +494,17 @@ class InoS3Helper:
                     "bucket": bucket
                 }
 
-        except Exception as e:
-            error_msg = f"❌ Error deleting s3://{bucket}/{s3_key}: {str(e)}"
-            logging.error(error_msg)
-            return {
-                "success": False,
-                "msg": error_msg,
-                "error_code": type(e).__name__,
-                "s3_key": s3_key,
-                "bucket": bucket
-            }
+        return await self._retry_operation(
+            _delete_operation,
+            f"delete_object(s3://{bucket}/{s3_key})"
+        )
 
     async def download_folder(
             self,
             s3_folder_key: str,
             local_folder_path: str,
-            bucket_name: Optional[str] = None
+            bucket_name: Optional[str] = None,
+            max_concurrent: int = 5
     ) -> Dict[str, Any]:
         """
         Download an entire folder from S3, preserving directory structure locally
@@ -497,6 +513,7 @@ class InoS3Helper:
             s3_folder_key: S3 key (path) of the folder to download (should end with '/')
             local_folder_path: Local directory path where the folder will be saved
             bucket_name: S3 bucket name (uses default if not provided)
+            max_concurrent: Maximum number of concurrent downloads (default: 5)
 
         Returns:
             Dict[str, Any]: Status information with success/failure counts and details
@@ -564,25 +581,57 @@ class InoS3Helper:
             
             logging.info(f"Found {result['total_files']} files to download from s3://{bucket}/{s3_folder_key}")
 
-            # Download each file
-            for obj in file_objects:
-                s3_key = obj['Key']
-
-                relative_path = s3_key[len(s3_folder_key):]
-                local_file_path = local_folder / relative_path
-                
-                try:
-                    download_result = await self.download_file(s3_key, str(local_file_path), bucket_name)
+            # Download files concurrently with semaphore to limit concurrent operations
+            semaphore = asyncio.Semaphore(max_concurrent)
+            
+            async def _download_single_file_with_semaphore(obj: Dict[str, Any]) -> Dict[str, Any]:
+                """Download a single file with semaphore control"""
+                async with semaphore:
+                    s3_key = obj['Key']
+                    relative_path = s3_key[len(s3_folder_key):]
+                    local_file_path = local_folder / relative_path
                     
-                    if download_result.get('success', False):
-                        result['downloaded_successfully'] += 1
-                    else:
-                        result['failed_downloads'] += 1
-                        result['errors'].append(f"Failed to download {s3_key}: {download_result.get('msg', 'Unknown error')}")
-                        
-                except Exception as e:
+                    try:
+                        download_result = await self.download_file(s3_key, str(local_file_path), bucket_name)
+                        return {
+                            's3_key': s3_key,
+                            'relative_path': relative_path,
+                            'result': download_result
+                        }
+                    except Exception as e:
+                        return {
+                            's3_key': s3_key,
+                            'relative_path': relative_path,
+                            'result': {
+                                'success': False,
+                                'msg': f"Exception during download: {str(e)}",
+                                'error_code': type(e).__name__
+                            }
+                        }
+
+            # Execute all downloads concurrently
+            download_tasks = [_download_single_file_with_semaphore(obj) for obj in file_objects]
+            download_results = await asyncio.gather(*download_tasks, return_exceptions=True)
+
+            # Process results
+            for download_result in download_results:
+                if isinstance(download_result, Exception):
                     result['failed_downloads'] += 1
-                    error_msg = f"Error downloading {s3_key}: {str(e)}"
+                    error_msg = f"Download task failed with exception: {str(download_result)}"
+                    result['errors'].append(error_msg)
+                    logging.error(error_msg)
+                    continue
+
+                s3_key = download_result['s3_key']
+                relative_path = download_result['relative_path']
+                download_outcome = download_result['result']
+                
+                if download_outcome.get('success', False):
+                    result['downloaded_successfully'] += 1
+                    logging.debug(f"Successfully downloaded {relative_path}")
+                else:
+                    result['failed_downloads'] += 1
+                    error_msg = f"Failed to download {relative_path}: {download_outcome.get('msg', 'Unknown error')}"
                     result['errors'].append(error_msg)
                     logging.error(error_msg)
 
@@ -798,46 +847,32 @@ class InoS3Helper:
                 "exists": False
             }
 
-        try:
-            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
-                await s3.head_object(Bucket=bucket, Key=s3_key)
-                return {
-                    "success": True,
-                    "msg": f"✅ Object s3://{bucket}/{s3_key} exists",
-                    "exists": True,
-                    "s3_key": s3_key,
-                    "bucket": bucket
-                }
+        async def _exists_operation() -> Dict[str, Any]:
+            try:
+                async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+                    await s3.head_object(Bucket=bucket, Key=s3_key)
+                    return {
+                        "success": True,
+                        "msg": f"✅ Object s3://{bucket}/{s3_key} exists",
+                        "exists": True,
+                        "s3_key": s3_key,
+                        "bucket": bucket
+                    }
+            except ClientError as e:
+                error_code = e.response['Error']['Code']
+                if error_code == 'NoSuchKey' or error_code == '404':
+                    return {
+                        "success": True,
+                        "msg": f"✅ Object s3://{bucket}/{s3_key} does not exist",
+                        "exists": False,
+                        "s3_key": s3_key,
+                        "bucket": bucket
+                    }
+                else:
+                    # Re-raise for retry mechanism to handle
+                    raise
 
-        except ClientError as e:
-            error_code = e.response['Error']['Code']
-            if error_code == 'NoSuchKey' or error_code == '404':
-                return {
-                    "success": True,
-                    "msg": f"✅ Object s3://{bucket}/{s3_key} does not exist",
-                    "exists": False,
-                    "s3_key": s3_key,
-                    "bucket": bucket
-                }
-            else:
-                error_msg = f"❌ Error checking object existence s3://{bucket}/{s3_key}: {e}"
-                logging.error(error_msg)
-                return {
-                    "success": False,
-                    "msg": error_msg,
-                    "error_code": error_code,
-                    "exists": False,
-                    "s3_key": s3_key,
-                    "bucket": bucket
-                }
-        except Exception as e:
-            error_msg = f"❌ Error checking object existence s3://{bucket}/{s3_key}: {str(e)}"
-            logging.error(error_msg)
-            return {
-                "success": False,
-                "msg": error_msg,
-                "error_code": type(e).__name__,
-                "exists": False,
-                "s3_key": s3_key,
-                "bucket": bucket
-            }
+        return await self._retry_operation(
+            _exists_operation,
+            f"object_exists(s3://{bucket}/{s3_key})"
+        )
