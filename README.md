@@ -1,6 +1,6 @@
 # InoPyUtils
 
-A comprehensive Python utility library designed for specific use-cases including S3-compatible storage operations, media processing, file management, AI workflow orchestration, configuration management, and logging.
+A comprehensive Python utility library designed for specific use-cases including S3-compatible storage operations, media processing, file management, configuration management, and logging.
 
 ---
 
@@ -158,6 +158,8 @@ pip install -e .
 - **pillow_heif**: HEIF/HEIC image format support
 - **opencv-python**: Video processing capabilities
 - **aioboto3**: Async AWS S3 operations
+- **aiofiles**: Async file operations
+- **botocore**: AWS core functionality and exception handling
 - **inocloudreve**: Cloud storage integration
 ---
 
