@@ -16,12 +16,15 @@ class InoConfigHelper:
 
     def get(self, section, key, fallback=None):
         try:
-            value = self.config.get(section, key, fallback=fallback).strip()
+            value = self.config.get(section, key, fallback=fallback)
             if isinstance(value, list):
-                print(f"❌ Config value for [{section}][{key}] is a list: {value}")
+                if self.debug:
+                    print(f"❌ Config value for [{section}][{key}] is a list: {value}")
                 return fallback
             if self.debug:
                 print(f"🔎 Raw value for [{section}][{key}] = {value} ({type(value)})")
+            if value is not None:
+                value = value.strip()
             return value
         except Exception as e:
             print(f"❌ Failed to get str for [{section}][{key}]: {e}")
