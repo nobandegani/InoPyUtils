@@ -37,7 +37,7 @@ class InoJsonHelper:
             return False
 
     @staticmethod
-    async def save_string_as_json(json_string: str, file_path: str) -> Dict:
+    async def save_string_as_json_async(json_string: str, file_path: str) -> Dict:
         """Save a JSON string to a file asynchronously."""
         try:
             file_path = Path(file_path)
@@ -55,7 +55,25 @@ class InoJsonHelper:
             return {"success": False, "msg": f"Error saving file: {str(e)}"}
 
     @staticmethod
-    async def save_json_as_json(json_data: Union[dict, list], file_path: str) -> Dict:
+    def save_string_as_json_sync(json_string: str, file_path: str) -> Dict:
+        """Save a JSON string to a file synchronously."""
+        try:
+            file_path = Path(file_path)
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+
+            json_data = json.loads(json_string)
+            
+            with open(file_path, 'w', encoding='utf-8') as file:
+                file.write(json.dumps(json_data, indent=2, ensure_ascii=False))
+            
+            return {"success": True, "msg": "save json successful"}
+        except json.JSONDecodeError as e:
+            return {"success": False, "msg": f"Invalid JSON string: {str(e)}"}
+        except Exception as e:
+            return {"success": False, "msg": f"Error saving file: {str(e)}"}
+
+    @staticmethod
+    async def save_json_as_json_async(json_data: Union[dict, list], file_path: str) -> Dict:
         """Save a JSON object (dict or list) to a file asynchronously."""
         try:
             file_path = Path(file_path)
@@ -69,11 +87,41 @@ class InoJsonHelper:
             return {"success": False, "msg": f"Error saving file: {str(e)}"}
 
     @staticmethod
-    async def read_json_from_file(file_path: str) -> Dict:
+    def save_json_as_json_sync(json_data: Union[dict, list], file_path: str) -> Dict:
+        """Save a JSON object (dict or list) to a file synchronously."""
+        try:
+            file_path = Path(file_path)
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(file_path, 'w', encoding='utf-8') as file:
+                file.write(json.dumps(json_data, indent=2, ensure_ascii=False))
+            
+            return {"success": True, "msg": "save json successful"}
+        except Exception as e:
+            return {"success": False, "msg": f"Error saving file: {str(e)}"}
+
+    @staticmethod
+    async def read_json_from_file_async(file_path: str) -> Dict:
         """Read JSON data from a file asynchronously."""
         try:
             async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
                 content = await file.read()
+                json_data = json.loads(content)
+            
+            return {"success": True, "msg": "JSON file successfully read and parsed", "data": json_data}
+        except FileNotFoundError:
+            return {"success": False, "msg": f"File not found: {file_path}", "data": None}
+        except json.JSONDecodeError as e:
+            return {"success": False, "msg": f"Invalid JSON in file: {str(e)}", "data": None}
+        except Exception as e:
+            return {"success": False, "msg": f"Error reading file: {str(e)}", "data": None}
+
+    @staticmethod
+    def read_json_from_file_sync(file_path: str) -> Dict:
+        """Read JSON data from a file synchronously."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as file:
+                content = file.read()
                 json_data = json.loads(content)
             
             return {"success": True, "msg": "JSON file successfully read and parsed", "data": json_data}
