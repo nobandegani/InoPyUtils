@@ -344,9 +344,31 @@ class InoJsonHelper:
 
     @staticmethod
     def find_field_from_array(json_data: Union[dict, list, Any], field_name: str, field_value: Any) -> dict:
-
-        return {
-            "success": True,
-            "msg": "Field value successfully found",
-            "data": {}
-        }
+        """Find all objects in JSON data that contain a specific field name with matching value."""
+        try:
+            matches = []
+            
+            def _search(obj):
+                if isinstance(obj, dict):
+                    # Check if this dict has the field with matching value
+                    if field_name in obj and obj[field_name] == field_value:
+                        matches.append(obj)
+                    # Recursively search nested values
+                    for value in obj.values():
+                        _search(value)
+                elif isinstance(obj, list):
+                    # Search each item in the list
+                    for item in obj:
+                        _search(item)
+                # For primitive types, no need to search further
+            
+            _search(json_data)
+            
+            return {
+                "success": True,
+                "msg": f"Found {len(matches)} objects with field '{field_name}' = '{field_value}'",
+                "first_match": matches[0] if len(matches) > 0 else None,
+                "matches": matches
+            }
+        except Exception as e:
+            return {"success": False, "msg": f"Error searching for field: {str(e)}", "data": None}
