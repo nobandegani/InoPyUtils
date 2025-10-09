@@ -1,14 +1,32 @@
 import json
 import aiofiles
-from typing import Union, Dict
+from typing import Union, Dict, Any, Optional
 
 class InoJsonHelper:
     @staticmethod
-    def string_to_dict(json_string: str) -> dict:
-        return json.loads(json_string)
+    def string_to_dict(json_string: str) -> Dict:
+        """Convert JSON string to dictionary with proper error handling."""
+        try:
+            return {"status": True, "msg": "", "data": json.loads(json_string)}
+        except json.JSONDecodeError as e:
+            return {"status": False, "msg": f"Invalid JSON string: {str(e)}", "data": None}
+        except Exception as e:
+            return {"status": False, "msg": f"Error parsing JSON: {str(e)}", "data": None}
+
+    @staticmethod
+    def json_to_string(json_data: Union[dict, list, Any], indent: Optional[int] = None, ensure_ascii: bool = False) -> Dict:
+        """Convert dictionary/list/any JSON-serializable object to JSON string."""
+        try:
+            json_string = json.dumps(json_data, indent=indent, ensure_ascii=ensure_ascii)
+            return {"status": True, "msg": "", "data": json_string}
+        except TypeError as e:
+            return {"status": False, "msg": f"Object not JSON serializable: {str(e)}", "data": None}
+        except Exception as e:
+            return {"status": False, "msg": f"Error converting to JSON string: {str(e)}", "data": None}
 
     @staticmethod
     def is_valid(json_string: str) -> bool:
+        """Check if a string is valid JSON."""
         try:
             json.loads(json_string)
             return True
