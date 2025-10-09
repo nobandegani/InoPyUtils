@@ -10,7 +10,7 @@ class InoJsonHelper:
     def string_to_dict(json_string: str) -> Dict:
         """Convert JSON string to dictionary with proper error handling."""
         try:
-            return {"success": True, "msg": "", "data": json.loads(json_string)}
+            return {"success": True, "msg": "JSON string successfully converted to dictionary", "data": json.loads(json_string)}
         except json.JSONDecodeError as e:
             return {"success": False, "msg": f"Invalid JSON string: {str(e)}", "data": None}
         except Exception as e:
@@ -21,7 +21,7 @@ class InoJsonHelper:
         """Convert dictionary/list/any JSON-serializable object to JSON string."""
         try:
             json_string = json.dumps(json_data, indent=indent, ensure_ascii=ensure_ascii)
-            return {"success": True, "msg": "", "data": json_string}
+            return {"success": True, "msg": "Data successfully converted to JSON string", "data": json_string}
         except TypeError as e:
             return {"success": False, "msg": f"Object not JSON serializable: {str(e)}", "data": None}
         except Exception as e:
@@ -76,7 +76,7 @@ class InoJsonHelper:
                 content = await file.read()
                 json_data = json.loads(content)
             
-            return {"success": True, "msg": "", "data": json_data}
+            return {"success": True, "msg": "JSON file successfully read and parsed", "data": json_data}
         except FileNotFoundError:
             return {"success": False, "msg": f"File not found: {file_path}", "data": None}
         except json.JSONDecodeError as e:
@@ -89,7 +89,7 @@ class InoJsonHelper:
         """Pretty print JSON data with proper formatting."""
         try:
             formatted = json.dumps(json_data, indent=indent, ensure_ascii=False, sort_keys=True)
-            return {"success": True, "msg": "", "data": formatted}
+            return {"success": True, "msg": "JSON data successfully formatted", "data": formatted}
         except Exception as e:
             return {"success": False, "msg": f"Error formatting JSON: {str(e)}", "data": None}
 
@@ -98,7 +98,7 @@ class InoJsonHelper:
         """Minify JSON data by removing all whitespace."""
         try:
             minified = json.dumps(json_data, separators=(',', ':'), ensure_ascii=False)
-            return {"success": True, "msg": "", "data": minified}
+            return {"success": True, "msg": "JSON data successfully minified", "data": minified}
         except Exception as e:
             return {"success": False, "msg": f"Error minifying JSON: {str(e)}", "data": None}
 
@@ -116,7 +116,7 @@ class InoJsonHelper:
                         target[key] = value
             
             _merge(result, dict2)
-            return {"success": True, "msg": "", "data": result}
+            return {"success": True, "msg": "Dictionaries successfully merged", "data": result}
         except Exception as e:
             return {"success": False, "msg": f"Error merging dictionaries: {str(e)}", "data": None}
 
@@ -152,7 +152,7 @@ class InoJsonHelper:
                 current = current[key]
             
             current[keys[-1]] = value
-            return {"success": True, "msg": "", "data": json_data}
+            return {"success": True, "msg": "Value successfully set in JSON data", "data": json_data}
         except Exception as e:
             return {"success": False, "msg": f"Error setting value: {str(e)}", "data": None}
 
@@ -177,7 +177,7 @@ class InoJsonHelper:
                 return dict(items)
             
             flattened = _flatten(json_data, sep=separator)
-            return {"success": True, "msg": "", "data": flattened}
+            return {"success": True, "msg": "JSON data successfully flattened", "data": flattened}
         except Exception as e:
             return {"success": False, "msg": f"Error flattening JSON: {str(e)}", "data": None}
 
@@ -197,7 +197,7 @@ class InoJsonHelper:
                 
                 current[keys[-1]] = value
             
-            return {"success": True, "msg": "", "data": result}
+            return {"success": True, "msg": "Flattened data successfully unflattened", "data": result}
         except Exception as e:
             return {"success": False, "msg": f"Error unflattening data: {str(e)}", "data": None}
 
@@ -269,7 +269,7 @@ class InoJsonHelper:
             differences = _compare(json1, json2)
             return {
                 "success": True,
-                "msg": "", 
+                "msg": "JSON objects successfully compared", 
                 "data": {
                     "are_equal": len(differences) == 0,
                     "differences": differences
@@ -301,7 +301,7 @@ class InoJsonHelper:
             else:
                 filtered_data = {k: v for k, v in json_data.items() if k in keys_to_keep}
             
-            return {"success": True, "msg": "", "data": filtered_data}
+            return {"success": True, "msg": "JSON data successfully filtered", "data": filtered_data}
         except Exception as e:
             return {"success": False, "msg": f"Error filtering keys: {str(e)}", "data": None}
 
@@ -338,7 +338,7 @@ class InoJsonHelper:
                     return obj
             
             cleaned_data = _clean(json_data)
-            return {"success": True, "msg": "", "data": cleaned_data}
+            return {"success": True, "msg": "Null values successfully removed from JSON data", "data": cleaned_data}
         except Exception as e:
             return {"success": False, "msg": f"Error removing null values: {str(e)}", "data": None}
 
