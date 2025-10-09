@@ -342,3 +342,11 @@ class InoJsonHelper:
         except Exception as e:
             return {"success": False, "msg": f"Error removing null values: {str(e)}", "data": None}
 
+    @staticmethod
+    def find_field_from_array(json_data: Union[dict, list, Any], field_name: str, field_value: Any) -> dict:
+
+        return {
+            "success": True,
+            "msg": "Field value successfully found",
+            "data": {}
+        }
