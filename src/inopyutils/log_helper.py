@@ -3,6 +3,8 @@ from enum import Enum
 import datetime
 import json
 import os
+import asyncio
+import aiofiles
 
 from .file_helper import InoFileHelper
 
@@ -17,7 +19,7 @@ class LogCategory(Enum):
 
 class InoLogHelper:
     """
-    A comprehensive logging helper that saves logs to files with proper categorization,
+    A comprehensive async logging helper that saves logs to files with proper categorization,
     timestamps, and automatic file rotation.
     """
 
@@ -37,10 +39,35 @@ class InoLogHelper:
         self.log_name = log_name
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024  # Convert MB to bytes
         
-        # Initialize log file
-        self._create_log_file()
+        # Initialize log file (will be set by async_init)
+        self.log_file = None
+        self._initialized = False
 
-    def _create_log_file(self):
+    @classmethod
+    async def create(cls, path_to_save: Path | str, log_name: str, max_file_size_mb: int = 10):
+        """
+        Async factory method to create and initialize InoLogHelper.
+        
+        Args:
+            path_to_save (Path | str): Directory where log file will be stored.
+            log_name (str): Base name for the log file (e.g., "UploadWorker").
+            max_file_size_mb (int): Maximum size in MB before rotating to new file (default: 10MB).
+            
+        Returns:
+            InoLogHelper: Fully initialized async log helper instance.
+        """
+        instance = cls(path_to_save, log_name, max_file_size_mb)
+        await instance._create_log_file()
+        instance._initialized = True
+        return instance
+
+    async def _ensure_initialized(self):
+        """Ensure the log helper is properly initialized."""
+        if not self._initialized:
+            await self._create_log_file()
+            self._initialized = True
+
+    async def _create_log_file(self):
         """Create or rotate to a new log file."""
         get_last_log = InoFileHelper.get_last_file(self.path)
         if get_last_log["success"]:
@@ -57,9 +84,12 @@ class InoLogHelper:
             # Create first log file
             self.log_file = self.path / f"{self.log_name}_00001.inolog"
 
-        self.log_file.touch(exist_ok=True)
+        # Create file asynchronously
+        if not self.log_file.exists():
+            async with aiofiles.open(self.log_file, 'w', encoding='utf-8') as f:
+                pass  # Just create the file
 
-    def add(self, log_data: dict, msg: str = "", category: LogCategory = None, source: str = None) -> None:
+    async def add(self, log_data: dict, msg: str = "", category: LogCategory = None, source: str = None) -> None:
         """
         Append a log entry to the log file in JSON-lines format with comprehensive metadata.
 
@@ -70,9 +100,12 @@ class InoLogHelper:
             source (str): Optional source identifier (function, class, module name).
         """
 
+        # Ensure the log helper is initialized
+        await self._ensure_initialized()
+
         # Check if file rotation is needed
         if self.log_file.exists() and self.log_file.stat().st_size >= self.max_file_size_bytes:
-            self._create_log_file()
+            await self._create_log_file()
 
         # Auto-detect category if not provided
         if category is None:
@@ -98,28 +131,29 @@ class InoLogHelper:
         # Remove None values to keep logs clean
         entry = {k: v for k, v in entry.items() if v is not None}
 
-        with self.log_file.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        # Write to file asynchronously
+        async with aiofiles.open(self.log_file, "a", encoding="utf-8") as f:
+            await f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
 
-    def debug(self, log_data: dict, msg: str = "", source: str = None) -> None:
+    async def debug(self, log_data: dict, msg: str = "", source: str = None) -> None:
         """Convenience method for DEBUG level logs."""
-        self.add(log_data, msg, LogCategory.DEBUG, source)
+        await self.add(log_data, msg, LogCategory.DEBUG, source)
 
-    def info(self, log_data: dict, msg: str = "", source: str = None) -> None:
+    async def info(self, log_data: dict, msg: str = "", source: str = None) -> None:
         """Convenience method for INFO level logs."""
-        self.add(log_data, msg, LogCategory.INFO, source)
+        await self.add(log_data, msg, LogCategory.INFO, source)
 
-    def warning(self, log_data: dict, msg: str = "", source: str = None) -> None:
+    async def warning(self, log_data: dict, msg: str = "", source: str = None) -> None:
         """Convenience method for WARNING level logs."""
-        self.add(log_data, msg, LogCategory.WARNING, source)
+        await self.add(log_data, msg, LogCategory.WARNING, source)
 
-    def error(self, log_data: dict, msg: str = "", source: str = None) -> None:
+    async def error(self, log_data: dict, msg: str = "", source: str = None) -> None:
         """Convenience method for ERROR level logs."""
-        self.add(log_data, msg, LogCategory.ERROR, source)
+        await self.add(log_data, msg, LogCategory.ERROR, source)
 
-    def critical(self, log_data: dict, msg: str = "", source: str = None) -> None:
+    async def critical(self, log_data: dict, msg: str = "", source: str = None) -> None:
         """Convenience method for CRITICAL level logs."""
-        self.add(log_data, msg, LogCategory.CRITICAL, source)
+        await self.add(log_data, msg, LogCategory.CRITICAL, source)
 
     def get_log_file_path(self) -> Path:
         """Get the current log file path."""
