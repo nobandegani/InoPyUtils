@@ -263,18 +263,15 @@ class InoS3Helper:
 
         async def _upload_operation() -> Dict[str, Any]:
             async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
-                async with aiofiles.open(local_file_path, 'rb') as file:
-                    put_args = {
-                        'Bucket': bucket,
-                        'Key': s3_key,
-                        'Body': file,  # Stream the file directly instead of loading into memory
-                        'ContentType': content_type
-                    }
-
-                    if metadata:
-                        put_args['Metadata'] = metadata
-
-                    await s3.put_object(**put_args)
+                extra_args = {'ContentType': content_type}
+                if metadata:
+                    extra_args['Metadata'] = metadata
+                await s3.upload_file(
+                    local_file_path,
+                    bucket,
+                    s3_key,
+                    ExtraArgs=extra_args
+                )
 
                 success_msg = f"✅ Successfully uploaded {Path(local_file_path).name} to s3://{bucket}/{s3_key} with content type {content_type}"
                 logging.info(success_msg)
