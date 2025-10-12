@@ -504,7 +504,8 @@ class InoS3Helper:
             s3_folder_key: str,
             local_folder_path: str,
             bucket_name: Optional[str] = None,
-            max_concurrent: int = 5
+            max_concurrent: int = 5,
+            verify: bool = True
     ) -> Dict[str, Any]:
         """
         Download an entire folder from S3, preserving directory structure locally
@@ -653,6 +654,30 @@ class InoS3Helper:
             result['error_code'] = type(e).__name__
             result['errors'].append(error_msg)
 
+        # Optional post-download verification
+        if verify:
+            try:
+                verification = await self.verify_folder_sync(
+                    s3_folder_key=s3_folder_key,
+                    local_folder_path=local_folder_path,
+                    bucket_name=bucket
+                )
+                result['verification'] = verification
+                if not verification.get('success', False):
+                    result['success'] = False
+                    result['error_code'] = 'VerificationFailed'
+                    result['msg'] = f"❌ Downloaded with verification mismatches: {verification.get('summary', verification.get('msg', 'Mismatch found'))}"
+                    logging.error(result['msg'])
+            except Exception as ve:
+                # Do not fail the main operation if verification step errors; report it
+                ver_msg = f"⚠️ Verification step failed: {str(ve)}"
+                logging.warning(ver_msg)
+                result['verification'] = {
+                    'success': False,
+                    'msg': ver_msg,
+                    'error_code': type(ve).__name__
+                }
+
         return result
 
     async def upload_folder(
@@ -660,7 +685,8 @@ class InoS3Helper:
             s3_folder_key: str,
             local_folder_path: str,
             bucket_name: Optional[str] = None,
-            max_concurrent: int = 5
+            max_concurrent: int = 5,
+            verify: bool = True
     ) -> Dict[str, Any]:
         """
         Upload an entire folder to S3, preserving directory structure
@@ -821,6 +847,30 @@ class InoS3Helper:
             result['error_code'] = type(e).__name__
             result['errors'].append(error_msg)
 
+        # Optional post-upload verification
+        if verify:
+            try:
+                verification = await self.verify_folder_sync(
+                    s3_folder_key=s3_folder_key,
+                    local_folder_path=local_folder_path,
+                    bucket_name=bucket
+                )
+                result['verification'] = verification
+                if not verification.get('success', False):
+                    result['success'] = False
+                    result['error_code'] = 'VerificationFailed'
+                    result['msg'] = f"❌ Uploaded with verification mismatches: {verification.get('summary', verification.get('msg', 'Mismatch found'))}"
+                    logging.error(result['msg'])
+            except Exception as ve:
+                # Do not fail the main operation if verification step errors; report it
+                ver_msg = f"⚠️ Verification step failed: {str(ve)}"
+                logging.warning(ver_msg)
+                result['verification'] = {
+                    'success': False,
+                    'msg': ver_msg,
+                    'error_code': type(ve).__name__
+                }
+
         return result
 
     async def object_exists(
@@ -876,3 +926,133 @@ class InoS3Helper:
             _exists_operation,
             f"object_exists(s3://{bucket}/{s3_key})"
         )
+    async def verify_folder_sync(
+            self,
+            s3_folder_key: str,
+            local_folder_path: str,
+            bucket_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Verify that the files in a local folder and the files in an S3 folder (prefix) are in sync.
+        The verification checks that:
+        - Every local file exists in S3 under the given prefix
+        - Every S3 object (non-folder marker) exists locally under the given folder
+        - File sizes match between local and S3
+
+        Args:
+            s3_folder_key: S3 key (path) prefix (should end with '/')
+            local_folder_path: Local directory path
+            bucket_name: S3 bucket name (uses default if not provided)
+
+        Returns:
+            Dict with success flag, counts, missing lists, mismatches, and a human-readable summary
+        """
+        bucket = bucket_name or self.bucket_name
+        if not bucket:
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket"
+            }
+
+        # Normalize inputs
+        if not s3_folder_key.endswith('/'):
+            s3_folder_key += '/'
+
+        local_folder = Path(local_folder_path)
+        if not local_folder.exists() or not local_folder.is_dir():
+            return {
+                "success": False,
+                "msg": f"❌ Local folder for verification is invalid: {local_folder_path}",
+                "error_code": "InvalidLocalFolder"
+            }
+
+        try:
+            # Build local files map: relative_path (with forward slashes) -> size
+            local_map: Dict[str, int] = {}
+            for file_path in local_folder.rglob('*'):
+                if file_path.is_file():
+                    rel = file_path.relative_to(local_folder)
+                    rel_norm = str(rel).replace('\\', '/')
+                    local_map[rel_norm] = file_path.stat().st_size
+
+            # Build remote files map by listing all objects under prefix
+            remote_map: Dict[str, int] = {}
+            continuation_token = None
+            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+                while True:
+                    params: Dict[str, Any] = {
+                        'Bucket': bucket,
+                        'Prefix': s3_folder_key,
+                        'MaxKeys': 1000
+                    }
+                    if continuation_token:
+                        params['ContinuationToken'] = continuation_token
+
+                    response = await s3.list_objects_v2(**params)
+                    contents = response.get('Contents', [])
+                    for obj in contents:
+                        key = obj['Key']
+                        if key.endswith('/'):
+                            continue  # skip folder markers
+                        rel_key = key[len(s3_folder_key):]
+                        remote_map[rel_key] = obj.get('Size', 0)
+
+                    if not response.get('IsTruncated', False):
+                        break
+                    continuation_token = response.get('NextContinuationToken')
+
+            # Compare sets
+            local_set = set(local_map.keys())
+            remote_set = set(remote_map.keys())
+
+            missing_in_remote = sorted(list(local_set - remote_set))
+            missing_in_local = sorted(list(remote_set - local_set))
+
+            # Size mismatches for files present on both sides
+            size_mismatches = []
+            for rel in sorted(local_set & remote_set):
+                lsize = local_map.get(rel, -1)
+                rsize = remote_map.get(rel, -1)
+                if lsize != rsize:
+                    size_mismatches.append({
+                        'relative_path': rel,
+                        'local_size': lsize,
+                        'remote_size': rsize
+                    })
+
+            success = len(missing_in_remote) == 0 and len(missing_in_local) == 0 and len(size_mismatches) == 0
+
+            summary_parts = []
+            if missing_in_remote:
+                summary_parts.append(f"{len(missing_in_remote)} missing in remote")
+            if missing_in_local:
+                summary_parts.append(f"{len(missing_in_local)} missing in local")
+            if size_mismatches:
+                summary_parts.append(f"{len(size_mismatches)} size mismatches")
+            summary = ", ".join(summary_parts) if summary_parts else "All files are in sync"
+
+            result: Dict[str, Any] = {
+                'success': success,
+                'msg': f"✅ Verification passed: {summary}" if success else f"❌ Verification failed: {summary}",
+                'summary': summary,
+                'bucket': bucket,
+                's3_folder_key': s3_folder_key,
+                'local_folder_path': local_folder_path,
+                'total_local_files': len(local_set),
+                'total_remote_files': len(remote_set),
+                'matched_files': len(local_set & remote_set) - len(size_mismatches),
+                'missing_in_remote': missing_in_remote,
+                'missing_in_local': missing_in_local,
+                'size_mismatches': size_mismatches
+            }
+
+            return result
+        except Exception as e:
+            error_msg = f"❌ Verification error for folder {local_folder_path} <-> s3://{bucket}/{s3_folder_key}: {str(e)}"
+            logging.error(error_msg)
+            return {
+                'success': False,
+                'msg': error_msg,
+                'error_code': type(e).__name__
+            }
