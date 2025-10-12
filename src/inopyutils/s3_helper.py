@@ -1056,3 +1056,132 @@ class InoS3Helper:
                 'msg': error_msg,
                 'error_code': type(e).__name__
             }
+
+
+    async def verify_file(
+            self,
+            local_file_path: str,
+            s3_key: str,
+            bucket_name: Optional[str] = None,
+            use_md5: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Verify a single local file against a cloud (S3) object.
+        Checks existence and size. Optionally verifies MD5 when ETag is a single-part MD5.
+
+        Args:
+            local_file_path: Path to the local file
+            s3_key: S3 key (path) to compare with
+            bucket_name: S3 bucket name (uses default if not provided)
+            use_md5: If True and ETag is a simple MD5 (no '-') then compute local MD5 and compare
+
+        Returns:
+            Dict with fields: success, msg, bucket, s3_key, local_file, exists_remote,
+            local_size, remote_size, sizes_match, etag, md5_checked, md5_match (optional),
+            and error_code on failure
+        """
+        bucket = bucket_name or self.bucket_name
+        if not bucket:
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket"
+            }
+
+        local_path = Path(local_file_path)
+        if not local_path.exists() or not local_path.is_file():
+            return {
+                "success": False,
+                "msg": f"❌ Local file not found: {local_file_path}",
+                "error_code": "FileNotFound"
+            }
+
+        async def _md5_of_file(path: Path) -> str:
+            import hashlib
+            hash_md5 = hashlib.md5()
+            # Use aiofiles to avoid blocking
+            async with aiofiles.open(path, 'rb') as f:  # type: ignore
+                while True:
+                    chunk = await f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    hash_md5.update(chunk)
+            return hash_md5.hexdigest()
+
+        async def _verify_operation() -> Dict[str, Any]:
+            try:
+                async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+                    # Retrieve remote object's metadata
+                    head = await s3.head_object(Bucket=bucket, Key=s3_key)
+                    remote_size = int(head.get('ContentLength', 0))
+                    etag_raw = head.get('ETag')
+                    # ETag comes quoted, e.g. "abcd..."
+                    etag = etag_raw.strip('"') if isinstance(etag_raw, str) else None
+
+                    local_size = local_path.stat().st_size
+                    sizes_match = (local_size == remote_size)
+
+                    md5_checked = False
+                    md5_match: Optional[bool] = None
+                    md5_supported = False
+
+                    # Only attempt MD5 compare when requested and ETag indicates single-part upload
+                    if use_md5 and etag and '-' not in etag:
+                        md5_supported = True
+                        md5_checked = True
+                        local_md5 = await _md5_of_file(local_path)
+                        md5_match = (local_md5 == etag)
+
+                    success = sizes_match and (md5_match is not False)
+
+                    msg: str
+                    if success:
+                        parts = ["✅ File verified"]
+                        if not sizes_match:
+                            parts.append("(size)!")  # should not happen when success True
+                        if md5_checked:
+                            parts.append("(MD5 matched)") if md5_match else parts.append("(MD5 skipped)")
+                        msg = " ".join(parts) + f": {local_file_path} <-> s3://{bucket}/{s3_key}"
+                    else:
+                        reasons = []
+                        if not sizes_match:
+                            reasons.append("size mismatch")
+                        if md5_checked and md5_match is False:
+                            reasons.append("md5 mismatch")
+                        msg = f"❌ File verification failed ({', '.join(reasons) if reasons else 'unknown reason'}): {local_file_path} <-> s3://{bucket}/{s3_key}"
+
+                    result: Dict[str, Any] = {
+                        'success': success,
+                        'msg': msg,
+                        'bucket': bucket,
+                        's3_key': s3_key,
+                        'local_file': str(local_path),
+                        'exists_remote': True,
+                        'local_size': local_size,
+                        'remote_size': remote_size,
+                        'sizes_match': sizes_match,
+                        'etag': etag,
+                        'md5_requested': use_md5,
+                        'md5_supported': md5_supported,
+                        'md5_checked': md5_checked,
+                        'md5_match': md5_match
+                    }
+                    return result
+            except ClientError as e:
+                code = e.response.get('Error', {}).get('Code')
+                if code in ('404', 'NoSuchKey'):
+                    return {
+                        'success': False,
+                        'msg': f"❌ File verification failed: remote object not found s3://{bucket}/{s3_key}",
+                        'error_code': 'NoSuchKey',
+                        'bucket': bucket,
+                        's3_key': s3_key,
+                        'local_file': str(local_path),
+                        'exists_remote': False
+                    }
+                raise
+
+        return await self._retry_operation(
+            _verify_operation,
+            f"verify_file({local_file_path} <-> s3://{bucket}/{s3_key})"
+        )
