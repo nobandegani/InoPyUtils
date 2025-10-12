@@ -1,5 +1,4 @@
 import asyncio
-import sys
 from pathlib import Path
 from typing import Dict, Any, Tuple
 from PIL import Image, ImageOps, ExifTags
@@ -93,7 +92,7 @@ class InoMediaHelper:
 
 
     @staticmethod
-    async def image_convert_ffmpeg(input_path: Path, output_path: Path):
+    async def image_convert_ffmpeg(input_path: Path, output_path: Path) -> dict:
         args = [
             'ffmpeg', '-y',
             '-loglevel', 'error',
@@ -191,7 +190,12 @@ class InoMediaHelper:
                             "output": str(final_out),
                         }
 
-                    if img.mode not in ("RGB", "L"):
+                    # Handle transparency by compositing on a white background before JPEG save
+                    if img.mode in ("RGBA", "LA"):
+                        alpha = img.getchannel("A")
+                        background = Image.new("RGB", img.size, (255, 255, 255))
+                        img = Image.composite(img.convert("RGB"), background, alpha)
+                    elif img.mode not in ("RGB", "L"):
                         img = img.convert("RGB")
 
                     save_kwargs: Dict[str, Any] = {
