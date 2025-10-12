@@ -32,7 +32,15 @@ class InoS3Helper:
         )
     """
 
-    def __init__(
+    def __init__(self):
+        self.region_name = None
+        self.bucket_name = None
+        self.endpoint_url = None
+        self.retries = 3
+        self.config = None
+        self.session = None
+
+    def init(
             self,
             aws_access_key_id: Optional[str] = None,
             aws_secret_access_key: Optional[str] = None,
@@ -45,7 +53,7 @@ class InoS3Helper:
     ):
         """
         Initialize S3 client with AWS credentials and configuration
-        
+
         Compatible with AWS S3 and S3-compatible storage services like Backblaze B2.
 
         Args:
@@ -58,6 +66,7 @@ class InoS3Helper:
             retries: Number of retry attempts for failed operations (default: 3)
             config: Optional botocore.config.Config for fine-tuning (timeouts, retries, signature version, etc.)
         """
+
         self.region_name = region_name
         self.bucket_name = bucket_name
         self.endpoint_url = endpoint_url
