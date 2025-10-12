@@ -1,16 +1,18 @@
 import asyncio
 import aiofiles
 from aioboto3 import Session
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError, EndpointConnectionError, ConnectTimeoutError, ReadTimeoutError, ConnectionClosedError
+from botocore.config import Config
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, Awaitable
 import logging
 import random
+import mimetypes
 
 
 class InoS3Helper:
     """
-    Async S3 client class that wraps aiboto3 functionality
+    Async S3 client class that wraps aioboto3 functionality
     
     Compatible with AWS S3 and S3-compatible storage services including:
     - Amazon S3
@@ -38,7 +40,8 @@ class InoS3Helper:
             region_name: str = 'us-east-1',
             bucket_name: Optional[str] = None,
             endpoint_url: Optional[str] = None,
-            retries: int = 3
+            retries: int = 3,
+            config: Optional[Config] = None
     ):
         """
         Initialize S3 client with AWS credentials and configuration
@@ -53,11 +56,13 @@ class InoS3Helper:
             bucket_name: Default bucket name for operations (optional)
             endpoint_url: Custom endpoint URL for S3-compatible services (e.g., Backblaze B2)
             retries: Number of retry attempts for failed operations (default: 3)
+            config: Optional botocore.config.Config for fine-tuning (timeouts, retries, signature version, etc.)
         """
         self.region_name = region_name
         self.bucket_name = bucket_name
         self.endpoint_url = endpoint_url
         self.retries = retries
+        self.config = config
 
         if aws_access_key_id and aws_secret_access_key:
             self.session = Session(
@@ -144,6 +149,20 @@ class InoS3Helper:
                         "msg": error_msg,
                         "error_code": error_code
                     }
+            except (EndpointConnectionError, ConnectTimeoutError, ReadTimeoutError, ConnectionClosedError) as e:
+                last_exception = e
+                if attempt < self.retries:
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    logging.warning(f"{operation_name} attempt {attempt + 1} failed with transient network error {type(e).__name__}, retrying in {wait_time:.2f}s: {str(e)}")
+                    await asyncio.sleep(wait_time)
+                else:
+                    error_msg = f"❌ {operation_name} failed after {self.retries + 1} attempts due to network error {type(e).__name__}: {str(e)}"
+                    logging.error(error_msg)
+                    return {
+                        "success": False,
+                        "msg": error_msg,
+                        "error_code": type(e).__name__
+                    }
             except Exception as e:
                 last_exception = e
                 if attempt < self.retries:
@@ -202,12 +221,17 @@ class InoS3Helper:
             }
 
         async def _upload_operation() -> Dict[str, Any]:
-            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+            async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
+                local_extra_args = dict(extra_args or {})
+                if 'ContentType' not in local_extra_args:
+                    guess, _ = mimetypes.guess_type(local_file_path)
+                    if guess:
+                        local_extra_args['ContentType'] = guess
                 await s3.upload_file(
                     local_file_path,
                     bucket,
                     s3_key,
-                    ExtraArgs=extra_args or {}
+                    ExtraArgs=local_extra_args
                 )
                 success_msg = f"✅ Successfully uploaded {Path(local_file_path).name} to s3://{bucket}/{s3_key}"
                 logging.info(success_msg)
@@ -233,7 +257,7 @@ class InoS3Helper:
             metadata: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
-        Upload a file using put_object for more control over metadata with automatic retry on failure
+        Upload a file with ExtraArgs control over metadata/content type, with automatic retry on failure
 
         Args:
             local_file_path: Path to the local file to upload
@@ -262,8 +286,13 @@ class InoS3Helper:
             }
 
         async def _upload_operation() -> Dict[str, Any]:
-            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
-                extra_args = {'ContentType': content_type}
+            async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
+                # Build ExtraArgs with sensible defaults and optional overrides
+                guess, _ = mimetypes.guess_type(local_file_path)
+                effective_content_type = content_type
+                if (not content_type or content_type == 'application/octet-stream') and guess:
+                    effective_content_type = guess
+                extra_args = {'ContentType': effective_content_type}
                 if metadata:
                     extra_args['Metadata'] = metadata
                 await s3.upload_file(
@@ -273,14 +302,14 @@ class InoS3Helper:
                     ExtraArgs=extra_args
                 )
 
-                success_msg = f"✅ Successfully uploaded {Path(local_file_path).name} to s3://{bucket}/{s3_key} with content type {content_type}"
+                success_msg = f"✅ Successfully uploaded {Path(local_file_path).name} to s3://{bucket}/{s3_key} with content type {effective_content_type}"
                 logging.info(success_msg)
                 return {
                     "success": True,
                     "msg": success_msg,
                     "s3_key": s3_key,
                     "bucket": bucket,
-                    "content_type": content_type,
+                    "content_type": effective_content_type,
                     "local_file": local_file_path,
                     "metadata": metadata or {}
                 }
@@ -318,7 +347,7 @@ class InoS3Helper:
         async def _download_operation() -> Dict[str, Any]:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
 
-            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+            async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
                 await s3.download_file(bucket, s3_key, local_file_path)
                 success_msg = f"✅ Successfully downloaded s3://{bucket}/{s3_key} to {local_file_path}"
                 logging.info(success_msg)
@@ -363,12 +392,13 @@ class InoS3Helper:
         async def _download_operation() -> Dict[str, Any]:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
 
-            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+            async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
                 response = await s3.get_object(Bucket=bucket, Key=s3_key)
 
                 async with aiofiles.open(local_file_path, 'wb') as file:
-                    async for chunk in response['Body'].iter_chunks():
-                        await file.write(chunk)
+                    async with response['Body'] as stream:
+                        async for chunk in stream.iter_chunks():
+                            await file.write(chunk)
 
                 success_msg = f"✅ Successfully downloaded s3://{bucket}/{s3_key} to {local_file_path}"
                 logging.info(success_msg)
@@ -423,7 +453,7 @@ class InoS3Helper:
             }
 
         async def _list_operation() -> Dict[str, Any]:
-            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+            async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
                 response = await s3.list_objects_v2(
                     Bucket=bucket,
                     Prefix=prefix,
@@ -480,7 +510,7 @@ class InoS3Helper:
             }
 
         async def _delete_operation() -> Dict[str, Any]:
-            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+            async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
                 await s3.delete_object(Bucket=bucket, Key=s3_key)
                 success_msg = f"✅ Successfully deleted s3://{bucket}/{s3_key}"
                 logging.info(success_msg)
@@ -550,7 +580,7 @@ class InoS3Helper:
             all_objects = []
             continuation_token = None
             
-            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+            async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
                 while True:
                     list_params = {
                         'Bucket': bucket,
@@ -896,7 +926,7 @@ class InoS3Helper:
 
         async def _exists_operation() -> Dict[str, Any]:
             try:
-                async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+                async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
                     await s3.head_object(Bucket=bucket, Key=s3_key)
                     return {
                         "success": True,
@@ -976,7 +1006,7 @@ class InoS3Helper:
             # Build remote files map by listing all objects under prefix
             remote_map: Dict[str, int] = {}
             continuation_token = None
-            async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+            async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
                 while True:
                     params: Dict[str, Any] = {
                         'Bucket': bucket,
@@ -1107,7 +1137,7 @@ class InoS3Helper:
 
         async def _verify_operation() -> Dict[str, Any]:
             try:
-                async with self.session.client('s3', endpoint_url=self.endpoint_url) as s3:
+                async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
                     # Retrieve remote object's metadata
                     head = await s3.head_object(Bucket=bucket, Key=s3_key)
                     remote_size = int(head.get('ContentLength', 0))
