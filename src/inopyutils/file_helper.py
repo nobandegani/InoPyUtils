@@ -4,6 +4,7 @@ import json
 import shutil
 import re
 from pathlib import Path
+import aiofiles
 from .media_helper import InoMediaHelper
 
 class InoFileHelper:
@@ -477,3 +478,37 @@ class InoFileHelper:
             "msg": f"📂 Validating files completed",
             "log_lines": log_lines
         }
+
+    @staticmethod
+    async def save_string_as_file(string: str, save_path:str) -> dict:
+        """
+        Asynchronously saves the given string to the specified path using aiofiles.
+        Creates parent directories if they do not exist.
+
+        Args:
+            string: The text content to write.
+            save_path: Full path (str) to the file to be written.
+
+        Returns:
+            dict with keys: success (bool), msg (str), path (str), size (int, optional)
+        """
+        try:
+            path = Path(save_path)
+            if path.parent and not path.parent.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+
+            async with aiofiles.open(path, mode="w", encoding="utf-8", newline="\n") as f:
+                await f.write(string)
+
+            size = path.stat().st_size if path.exists() else 0
+            return {
+                "success": True,
+                "msg": f"✅ Saved string to '{path}'",
+                "path": str(path),
+                "size": size,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "msg": f"❌ Failed to save string to '{save_path}': {e}",
+            }
