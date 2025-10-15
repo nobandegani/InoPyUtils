@@ -28,6 +28,7 @@ dependencies = [
     "inocloudreve",
     "aioboto3",
     "aiofiles",
+    "aiohttp",
     "botocore",
 ]
 
