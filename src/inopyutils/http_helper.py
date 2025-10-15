@@ -16,14 +16,16 @@ class InoHttpHelper:
     - Usable as an async context manager or managed manually (close())
 
     Notes on return value
-    - Each verb method returns a tuple: (status_code, headers, body)
-      where:
-        - headers is a case-insensitive CIMultiDictProxy cast to a plain dict for convenience
-        - body is:
-            - JSON-decoded Python object if response content-type is JSON and json=True
-            - bytes if return_bytes=True
-            - otherwise text (str) decoded using response encoding
-    - You can force JSON parsing by passing json=True, regardless of content-type.
+    - Each verb method returns a dict with at least the following keys:
+        - success: bool
+        - msg: str (error message or response reason)
+        - status_code: int | None
+        - headers: dict[str, str]
+        - data: parsed body (JSON object, bytes, or text depending on flags)
+        - url: final URL used
+        - method: HTTP method
+        - attempts: number of attempts used (including retries)
+      You can force JSON parsing by passing json/json_response=True, regardless of content-type.
     """
 
     def __init__(
@@ -95,7 +97,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         force_json: bool = False,
         allow_redirects: bool = True,
-    ) -> Tuple[int, Dict[str, str], Union[str, bytes, Any]]:
+    ) -> Dict[str, Any]:
         full_url = self._compose_url(url)
         merged_headers = self._merge_headers(headers)
 
@@ -132,32 +134,89 @@ class InoHttpHelper:
                         body = await resp.text()
                     # Convert headers to a plain dict for ease of use
                     headers_out = {k: v for k, v in resp.headers.items()}
-                    return resp.status, headers_out, body
+                    success = resp.status < 400
+                    result: Dict[str, Any] = {
+                        "success": success,
+                        "msg": resp.reason or "",
+                        "status_code": resp.status,
+                        "headers": headers_out,
+                        "data": body,
+                        "url": full_url,
+                        "method": method.upper(),
+                        "attempts": attempt,
+                    }
+                    return result
 
             except aiohttp.ClientResponseError as cre:
                 # Retry on configured statuses already handled above; for explicit raise_for_status
                 last_exc = cre
-                if cre.status in self._retry_for_statuses and attempt < attempts:
+                if getattr(cre, "status", None) in self._retry_for_statuses and attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                raise
+                # On last attempt or non-retryable status, return failure dict
+                return {
+                    "success": False,
+                    "msg": str(cre),
+                    "status_code": getattr(cre, "status", None),
+                    "headers": {},
+                    "data": None,
+                    "url": full_url,
+                    "method": method.upper(),
+                    "attempts": attempt,
+                }
             except (aiohttp.ClientConnectionError, aiohttp.ServerTimeoutError, aiohttp.ClientOSError, aiohttp.TooManyRedirects) as ce:
                 last_exc = ce
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                raise
+                return {
+                    "success": False,
+                    "msg": str(ce),
+                    "status_code": None,
+                    "headers": {},
+                    "data": None,
+                    "url": full_url,
+                    "method": method.upper(),
+                    "attempts": attempt,
+                }
             except asyncio.TimeoutError as te:
                 last_exc = te
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                raise
+                return {
+                    "success": False,
+                    "msg": "Request timed out: " + str(te),
+                    "status_code": None,
+                    "headers": {},
+                    "data": None,
+                    "url": full_url,
+                    "method": method.upper(),
+                    "attempts": attempt,
+                }
 
-        # Should not reach here; re-raise last exception if any
+        # Should not reach here; return failure dict if no response and no exception
         if last_exc:
-            raise last_exc
-        raise RuntimeError("HTTP request failed without exception and without response")
+            return {
+                "success": False,
+                "msg": str(last_exc),
+                "status_code": getattr(last_exc, "status", None),
+                "headers": {},
+                "data": None,
+                "url": full_url,
+                "method": method.upper(),
+                "attempts": attempts,
+            }
+        return {
+            "success": False,
+            "msg": "HTTP request failed without exception and without response",
+            "status_code": None,
+            "headers": {},
+            "data": None,
+            "url": full_url,
+            "method": method.upper(),
+            "attempts": attempts,
+        }
 
     def _compose_url(self, url: str) -> str:
         if self._base_url and not url.lower().startswith(("http://", "https://")):
@@ -181,7 +240,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         json: bool = False,
         allow_redirects: bool = True,
-    ) -> Tuple[int, Dict[str, str], Union[str, bytes, Any]]:
+    ) -> Dict[str, Any]:
         return await self._request(
             "GET",
             url,
@@ -205,7 +264,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         json_response: bool = False,
         allow_redirects: bool = True,
-    ) -> Tuple[int, Dict[str, str], Union[str, bytes, Any]]:
+    ) -> Dict[str, Any]:
         return await self._request(
             "POST",
             url,
@@ -231,7 +290,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         json_response: bool = False,
         allow_redirects: bool = True,
-    ) -> Tuple[int, Dict[str, str], Union[str, bytes, Any]]:
+    ) -> Dict[str, Any]:
         return await self._request(
             "PUT",
             url,
@@ -255,7 +314,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         json: bool = False,
         allow_redirects: bool = True,
-    ) -> Tuple[int, Dict[str, str], Union[str, bytes, Any]]:
+    ) -> Dict[str, Any]:
         return await self._request(
             "DELETE",
             url,
@@ -279,7 +338,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         json_response: bool = False,
         allow_redirects: bool = True,
-    ) -> Tuple[int, Dict[str, str], Union[str, bytes, Any]]:
+    ) -> Dict[str, Any]:
         return await self._request(
             "PATCH",
             url,
