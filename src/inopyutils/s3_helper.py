@@ -962,6 +962,96 @@ class InoS3Helper:
             _exists_operation,
             f"object_exists(s3://{bucket}/{s3_key})"
         )
+    async def get_download_link(
+            self,
+            s3_key: str,
+            bucket_name: Optional[str] = None,
+            expires_in: int = 3600,
+            as_attachment: bool = False,
+            filename: Optional[str] = None,
+            response_content_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate a direct (pre-signed) download link for an S3 object.
+
+        Args:
+            s3_key: S3 key (path) of the file
+            bucket_name: S3 bucket name (uses default if not provided)
+            expires_in: Link expiration in seconds (default 3600 = 1 hour)
+            as_attachment: If True, sets Content-Disposition to attachment with a filename so browsers download
+            filename: Optional filename to suggest to the browser; defaults to the object's basename
+            response_content_type: Optional content type to force in the download response
+
+        Returns:
+            Dict with fields including success, msg, url, filename, bucket, s3_key, expires_in,
+            content_type, content_length, etag, last_modified, endpoint_url; and error_code on failure
+        """
+        bucket = bucket_name or self.bucket_name
+        if not bucket:
+            return {
+                "success": False,
+                "msg": "❌ Bucket name must be provided either during initialization or method call",
+                "error_code": "MissingBucket"
+            }
+
+        async def _op() -> Dict[str, Any]:
+            async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
+                # Ensure object exists and get basic metadata
+                head = await s3.head_object(Bucket=bucket, Key=s3_key)
+                content_length = int(head.get('ContentLength', 0))
+                content_type = head.get('ContentType')
+                last_modified = head.get('LastModified')
+                etag_raw = head.get('ETag')
+                etag = etag_raw.strip('"') if isinstance(etag_raw, str) else None
+
+                # Determine filename to present to client
+                default_filename = Path(s3_key).name
+                use_filename = filename or head.get('Metadata', {}).get('filename') or default_filename
+
+                # Decide response content-type
+                chosen_resp_content_type = response_content_type
+                if not chosen_resp_content_type:
+                    guess, _ = mimetypes.guess_type(use_filename)
+                    if guess:
+                        chosen_resp_content_type = guess
+                    elif content_type:
+                        chosen_resp_content_type = content_type
+
+                params: Dict[str, Any] = {
+                    'Bucket': bucket,
+                    'Key': s3_key,
+                }
+                # Response header overrides
+                if as_attachment and use_filename:
+                    params['ResponseContentDisposition'] = f'attachment; filename="{use_filename}"'
+                if chosen_resp_content_type:
+                    params['ResponseContentType'] = chosen_resp_content_type
+
+                url = await s3.generate_presigned_url(
+                    'get_object',
+                    Params=params,
+                    ExpiresIn=expires_in
+                )
+                return {
+                    "success": True,
+                    "msg": f"✅ Generated download link for s3://{bucket}/{s3_key}",
+                    "url": url,
+                    "bucket": bucket,
+                    "s3_key": s3_key,
+                    "filename": use_filename,
+                    "expires_in": expires_in,
+                    "content_type": content_type or chosen_resp_content_type,
+                    "content_length": content_length,
+                    "etag": etag,
+                    "last_modified": str(last_modified) if last_modified is not None else None,
+                    "endpoint_url": self.endpoint_url,
+                }
+
+        return await self._retry_operation(
+            _op,
+            f"get_download_link(s3://{bucket}/{s3_key})"
+        )
+
     async def verify_folder_sync(
             self,
             s3_folder_key: str,
