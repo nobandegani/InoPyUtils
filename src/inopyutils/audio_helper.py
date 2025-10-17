@@ -123,3 +123,48 @@ class InoAudioHelper:
             "error_code": err.decode(errors="ignore"),
             "data": out,
         }
+
+    @staticmethod
+    async def chunks_raw_pcm(
+            audio: bytes,
+            chunk_size: int = 1024
+    ) -> dict:
+        """
+        Split a raw PCM byte stream into fixed-size chunks.
+
+        Parameters:
+            audio: Raw PCM bytes.
+            chunk_size: Size of each chunk in bytes.
+
+        Returns:
+            dict with keys:
+                success: bool
+                msg: str
+                count: int (number of chunks)
+                chunks: list[bytes] (chunks of raw PCM)
+        """
+        # Validate inputs
+        if not isinstance(audio, (bytes, bytearray)):
+            return {
+                "success": False,
+                "msg": "audio must be bytes or bytearray",
+                "count": 0,
+                "chunks": [],
+            }
+        if not isinstance(chunk_size, int) or chunk_size <= 0:
+            return {
+                "success": False,
+                "msg": "chunk_size must be a positive integer",
+                "count": 0,
+                "chunks": [],
+            }
+
+        data = bytes(audio)
+        chunks = [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)] if data else []
+
+        return {
+            "success": True,
+            "msg": "Raw PCM chunked successfully",
+            "count": len(chunks),
+            "chunks": chunks,
+        }
