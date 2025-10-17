@@ -179,3 +179,75 @@ class InoAudioHelper:
         words = len([t for t in cleaned.split(' ') if re.search(r'\w', t)])
         minutes = words / max(wpm, 1e-6)
         return minutes * 60.0
+
+    @staticmethod
+    def get_empty_audio_pcm_bytes (
+            duration: int = 1,
+            to_format: str = "s16le",
+            rate: int = 16000,
+            channel: int = 1,
+    ) -> bytes:
+        """
+        Generate a silent raw PCM byte buffer of the requested duration.
+
+        Parameters:
+            duration: Duration in seconds (integer seconds are typical; values <= 0 yield empty bytes).
+            to_format: PCM sample format string (e.g., "s16le", "f32le"). Only raw PCM formats are supported.
+            rate: Sample rate (Hz), e.g., 16000.
+            channel: Number of channels, e.g., 1 for mono, 2 for stereo.
+
+        Returns:
+            bytes: Raw PCM bytes representing silence for the given parameters.
+        """
+        # Basic validation and coercion
+        try:
+            dur_s = float(duration)
+        except Exception:
+            return b""
+        if dur_s <= 0:
+            return b""
+        if not isinstance(rate, int) or rate <= 0:
+            return b""
+        if not isinstance(channel, int) or channel <= 0:
+            return b""
+
+        fmt = (to_format or "s16le").lower()
+
+        # Map common raw PCM formats to bytes-per-sample and the silence byte value/pattern.
+        # For signed PCM and IEEE float, silence is all zero bytes regardless of endianness.
+        # For unsigned 8-bit PCM, silence is 0x80.
+        bytes_per_sample = None
+        silence_byte = 0x00
+
+        if fmt in ("s8",):
+            bytes_per_sample = 1
+            silence_byte = 0x00
+        elif fmt in ("u8",):
+            bytes_per_sample = 1
+            silence_byte = 0x80
+        elif fmt in ("s16le", "s16be", "s16"):  # treat generic s16 as 2 bytes
+            bytes_per_sample = 2
+        elif fmt in ("s24le", "s24be", "s24"):
+            bytes_per_sample = 3
+        elif fmt in ("s32le", "s32be", "s32"):
+            bytes_per_sample = 4
+        elif fmt in ("f32le", "f32be", "f32"):
+            bytes_per_sample = 4
+        elif fmt in ("f64le", "f64be", "f64"):
+            bytes_per_sample = 8
+        else:
+            # Unsupported/unknown format
+            return b""
+
+        frames = int(round(dur_s * rate))
+        total_bytes = frames * channel * bytes_per_sample
+
+        if total_bytes <= 0:
+            return b""
+
+        # For 1-byte formats, we may need a non-zero bias for silence (u8 -> 0x80).
+        if bytes_per_sample == 1 and silence_byte != 0x00:
+            return bytes([silence_byte]) * total_bytes
+
+        # For multi-byte formats and signed/float 1-byte formats, silence is zeros.
+        return bytes(total_bytes)
