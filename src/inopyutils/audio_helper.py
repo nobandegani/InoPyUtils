@@ -10,7 +10,9 @@ class InoAudioHelper:
             application: str = "voip",
             rate: int = 16000,
             channel: int = 1,
-            gain_db: float | None = None
+            gain_db: float | None = None,
+            limit_after_gain: bool = True,
+            limit_ceiling: float = 0.98
     ) -> dict:
         args = [
             "ffmpeg",
@@ -20,14 +22,21 @@ class InoAudioHelper:
             "-i", "pipe:0",
         ]
 
+        afilters: list[str] = []
         if gain_db is not None:
-            args += ["-filter:a", f"volume={gain_db}dB"]
+            afilters.append(f"volume={gain_db}dB")
+            if limit_after_gain:
+                afilters.append(f"alimiter=limit={limit_ceiling}")
+
+        if afilters:
+            args += ["-filter:a", ",".join(afilters)]
 
         args += [
             "-c:a", codec,
             "-b:a", "24k",
             "-vbr", "on",
             "-application", application,
+            "-sample_fmt", "s16",
             "-f", output,
             "pipe:1",
         ]
