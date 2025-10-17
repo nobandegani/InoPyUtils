@@ -5,6 +5,7 @@ from .log_helper import InoLogHelper, LogType
 from .s3_helper import InoS3Helper
 from .json_helper import InoJsonHelper
 from .http_helper import InoHttpHelper
+from .audio_helper import InoAudioHelper
 
 __all__ = [
     "InoConfigHelper",
@@ -15,4 +16,5 @@ __all__ = [
     "InoS3Helper",
     "InoJsonHelper",
     "InoHttpHelper",
+    "InoAudioHelper"
 ]
