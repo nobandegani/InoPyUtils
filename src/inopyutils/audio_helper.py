@@ -6,6 +6,7 @@ class InoAudioHelper:
             pcm_bytes: bytes,
             output:str = "ogg",
             codec: str = "libopus",
+            to_format: str = "s16le",
             application: str = "voip",
             rate: int = 16000,
             channel: int = 1,
@@ -13,7 +14,7 @@ class InoAudioHelper:
     ) -> dict:
         args = [
             "ffmpeg",
-            "-f", "s16le",
+            "-f", to_format,
             "-ar", str(rate),
             "-ac", str(channel),
             "-i", "pipe:0",
@@ -53,3 +54,11 @@ class InoAudioHelper:
             "error_code": err.decode(),
             "data": out
         }
+
+    @staticmethod
+    async def audio_to_raw_pcm(
+            audio: bytes,
+            to_format: str = "s16le",
+            rate: int = 16000,
+            channel: int = 1,
+    ) -> dict:
