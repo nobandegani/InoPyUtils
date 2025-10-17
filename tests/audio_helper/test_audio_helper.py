@@ -5,6 +5,8 @@ import tempfile
 import wave
 import sys
 import subprocess
+from array import array
+import math
 
 from src.inopyutils import InoAudioHelper
 
@@ -117,6 +119,70 @@ def play_file_via_winsound_transcode(file_path: str, rate: int = 16000, channel:
             pass
 
 
+def pcm_int16_stats(pcm_bytes: bytes, channel: int = 1) -> dict:
+    """Compute simple stats for s16le PCM. Returns dict with duration, min, max, peak, rms."""
+    if not pcm_bytes:
+        return {"samples": 0, "duration_s": 0.0, "min": 0, "max": 0, "peak": 0, "rms": 0.0}
+    buf = array('h')
+    buf.frombytes(pcm_bytes)
+    # array('h') uses native endianness; on little-endian systems this matches s16le
+    # If running on big-endian, swap bytes
+    if array('h').itemsize == 2 and sys.byteorder != 'little':
+        buf.byteswap()
+    n = len(buf)
+    if n == 0:
+        return {"samples": 0, "duration_s": 0.0, "min": 0, "max": 0, "peak": 0, "rms": 0.0}
+    mn = min(buf)
+    mx = max(buf)
+    peak = max(abs(mn), abs(mx))
+    # RMS
+    ssum = 0
+    for v in buf:
+        ssum += v * v
+    rms = math.sqrt(ssum / n)
+    # Estimate duration from bytes for 16kHz mono s16: 2 bytes per sample per channel
+    samples_per_channel = n // channel
+    duration_s = samples_per_channel / 16000.0
+    return {"samples": n, "duration_s": duration_s, "min": mn, "max": mx, "peak": peak, "rms": rms}
+
+
+def write_wav_and_play(pcm_bytes: bytes, rate: int = 16000, channel: int = 1) -> bool:
+    """Write PCM to a temp WAV, then attempt playback via ffplay, then winsound."""
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp_path = tmp.name
+        with wave.open(tmp_path, 'wb') as wf:
+            wf.setnchannels(channel)
+            wf.setsampwidth(2)
+            wf.setframerate(rate)
+            wf.writeframes(pcm_bytes)
+        # Try ffplay on the WAV
+        try:
+            # Reuse the existing async function by running a short event loop if needed is complex here.
+            # Use synchronous subprocess for simplicity.
+            ffplay = shutil.which("ffplay")
+            if ffplay:
+                proc = subprocess.run([ffplay, "-autoexit", "-nodisp", "-loglevel", "error", tmp_path])
+                if proc.returncode == 0:
+                    return True
+        except Exception:
+            pass
+        # Fallback to winsound
+        try:
+            import winsound
+            winsound.PlaySound(tmp_path, winsound.SND_FILENAME)
+            return True
+        except Exception:
+            return False
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
 async def main():
     """Main manual test function: preflight play original -> load bytes -> raw PCM -> play."""
     print("AudioHelper Compatibility Test Suite")
@@ -154,16 +220,44 @@ async def main():
     pcm = result["data"]
     print(f"[Decode] Decoded PCM bytes: {len(pcm):,}")
 
-    # Try to play via ffplay; fallback to winsound on Windows
-    print("\n[Post-decode] Attempting to play decoded PCM...")
-    played = await play_pcm_ffplay(pcm, rate=16000, channel=1, fmt="s16le")
-    if not played:
-        played = play_pcm_winsound_fallback(pcm, rate=16000, channel=1)
+    # Stats to determine if PCM is silent or low-level
+    stats = pcm_int16_stats(pcm, channel=1)
+    print(f"[Decode] Stats: samples={stats['samples']:,}, duration≈{stats['duration_s']:.2f}s, min={stats['min']}, max={stats['max']}, peak={stats['peak']}, rms={stats['rms']:.1f}")
+    if stats['peak'] == 0 or stats['rms'] < 50:
+        print("[Warn] PCM appears near-silent. This suggests an upstream decode issue or a very quiet source.")
 
-    if played:
-        print("[Post-decode] Playback attempted. If you heard audio, decoding works.")
+    # Try to play via ffplay; fallback to winsound on Windows
+    print("\n[Post-decode] Attempting to play decoded PCM via stdin -> ffplay...")
+    played = await play_pcm_ffplay(pcm, rate=16000, channel=1, fmt="s16le")
+
+    # Alternate path: write WAV and play, to isolate stdin issues
+    print("[Post-decode] Also attempting alternate playback: write WAV -> play...")
+    alt_played = write_wav_and_play(pcm, rate=16000, channel=1)
+
+    if played or alt_played:
+        print("[Post-decode] Playback attempted (stdin and/or WAV path). If you heard audio, decoding works.")
     else:
         print("[Post-decode] Playback not available (no ffplay/winsound). Raw PCM decoding still verified.")
+
+    # Optional: round-trip encode the PCM to OGG and try to play it to confirm validity end-to-end
+    try:
+        rt = await InoAudioHelper.transcode_raw_pcm(pcm, output="ogg", codec="libopus", to_format="s16le", rate=16000, channel=1)
+        if rt.get('success') and rt.get('data'):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as ogg_tmp:
+                ogg_path = ogg_tmp.name
+                ogg_tmp.write(rt['data'])
+            try:
+                print("\n[Round-trip] Attempting to play re-encoded OGG via ffplay...")
+                await play_file_ffplay(ogg_path)
+            finally:
+                try:
+                    os.remove(ogg_path)
+                except Exception:
+                    pass
+        else:
+            print("[Round-trip] Transcode back to OGG failed; skipping playback.")
+    except Exception as e:
+        print(f"[Round-trip] Skipped due to error: {e}")
 
 
 if __name__ == "__main__":
