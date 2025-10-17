@@ -1,3 +1,4 @@
+import re
 import asyncio
 
 class InoAudioHelper:
@@ -168,3 +169,13 @@ class InoAudioHelper:
             "count": len(chunks),
             "chunks": chunks,
         }
+
+    @staticmethod
+    def get_audio_duration_from_text (text: str, wpm: float = 160.0) -> float:
+        cleaned = re.sub(r'\s+', ' ', text).strip()
+        if not cleaned:
+            return 0.0
+
+        words = len([t for t in cleaned.split(' ') if re.search(r'\w', t)])
+        minutes = words / max(wpm, 1e-6)
+        return minutes * 60.0
