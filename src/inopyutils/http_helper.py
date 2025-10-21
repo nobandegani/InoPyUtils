@@ -12,6 +12,7 @@ class InoHttpHelper:
     Features
     - Configurable timeouts, connection limits, retries, and default headers
     - Convenience async methods: get, post, put, delete, patch
+    - Optional authentication (default at session level or per-request override) using aiohttp.BasicAuth
     - Automatic retry with exponential backoff on transient errors and 5xx responses
     - Usable as an async context manager or managed manually (close())
 
@@ -48,6 +49,8 @@ class InoHttpHelper:
         default_headers: Optional[Mapping[str, str]] = None,
         raise_for_status: bool = False,
         trust_env: bool = False,
+        # Authentication
+        auth: Optional[Union[aiohttp.BasicAuth, Tuple[str, str]]] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/") if base_url else None
         self._default_headers = dict(default_headers or {})
@@ -55,6 +58,12 @@ class InoHttpHelper:
         self._retries = max(0, retries)
         self._backoff_factor = max(0.0, backoff_factor)
         self._retry_for_statuses = set(retry_for_statuses)
+
+        # Normalize default auth (supports passing (username, password))
+        if isinstance(auth, tuple):
+            self._auth: Optional[aiohttp.BasicAuth] = aiohttp.BasicAuth(auth[0], auth[1])
+        else:
+            self._auth = auth
 
         timeout = aiohttp.ClientTimeout(
             total=timeout_total,
@@ -65,7 +74,11 @@ class InoHttpHelper:
         connector = aiohttp.TCPConnector(limit=limit, limit_per_host=limit_per_host)
 
         self._session = aiohttp.ClientSession(
-            timeout=timeout, connector=connector, headers=self._default_headers, trust_env=trust_env
+            timeout=timeout,
+            connector=connector,
+            headers=self._default_headers,
+            trust_env=trust_env,
+            auth=self._auth,
         )
 
     # Async context manager support
@@ -97,9 +110,15 @@ class InoHttpHelper:
         return_bytes: bool = False,
         force_json: bool = False,
         allow_redirects: bool = True,
+        auth: Optional[Union[aiohttp.BasicAuth, Tuple[str, str]]] = None,
     ) -> Dict[str, Any]:
         full_url = self._compose_url(url)
         merged_headers = self._merge_headers(headers)
+        # Normalize per-request auth override
+        if isinstance(auth, tuple):
+            auth_obj: Optional[aiohttp.BasicAuth] = aiohttp.BasicAuth(auth[0], auth[1])
+        else:
+            auth_obj = auth
 
         last_exc: Optional[BaseException] = None
         attempts = self._retries + 1
@@ -114,6 +133,7 @@ class InoHttpHelper:
                     data=data,
                     timeout=timeout,
                     allow_redirects=allow_redirects,
+                    auth=auth_obj,
                 ) as resp:
                     if self._raise_for_status and resp.status >= 400:
                         # If raising, do not consume body first
@@ -240,6 +260,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         json: bool = False,
         allow_redirects: bool = True,
+        auth: Optional[Union[aiohttp.BasicAuth, Tuple[str, str]]] = None,
     ) -> Dict[str, Any]:
         return await self._request(
             "GET",
@@ -250,6 +271,7 @@ class InoHttpHelper:
             return_bytes=return_bytes,
             force_json=json,
             allow_redirects=allow_redirects,
+            auth=auth,
         )
 
     async def post(
@@ -264,6 +286,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         json_response: bool = False,
         allow_redirects: bool = True,
+        auth: Optional[Union[aiohttp.BasicAuth, Tuple[str, str]]] = None,
     ) -> Dict[str, Any]:
         return await self._request(
             "POST",
@@ -276,6 +299,7 @@ class InoHttpHelper:
             return_bytes=return_bytes,
             force_json=json_response,
             allow_redirects=allow_redirects,
+            auth=auth,
         )
 
     async def put(
@@ -290,6 +314,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         json_response: bool = False,
         allow_redirects: bool = True,
+        auth: Optional[Union[aiohttp.BasicAuth, Tuple[str, str]]] = None,
     ) -> Dict[str, Any]:
         return await self._request(
             "PUT",
@@ -302,6 +327,7 @@ class InoHttpHelper:
             return_bytes=return_bytes,
             force_json=json_response,
             allow_redirects=allow_redirects,
+            auth=auth,
         )
 
     async def delete(
@@ -314,6 +340,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         json: bool = False,
         allow_redirects: bool = True,
+        auth: Optional[Union[aiohttp.BasicAuth, Tuple[str, str]]] = None,
     ) -> Dict[str, Any]:
         return await self._request(
             "DELETE",
@@ -324,6 +351,7 @@ class InoHttpHelper:
             return_bytes=return_bytes,
             force_json=json,
             allow_redirects=allow_redirects,
+            auth=auth,
         )
 
     async def patch(
@@ -338,6 +366,7 @@ class InoHttpHelper:
         return_bytes: bool = False,
         json_response: bool = False,
         allow_redirects: bool = True,
+        auth: Optional[Union[aiohttp.BasicAuth, Tuple[str, str]]] = None,
     ) -> Dict[str, Any]:
         return await self._request(
             "PATCH",
@@ -350,6 +379,7 @@ class InoHttpHelper:
             return_bytes=return_bytes,
             force_json=json_response,
             allow_redirects=allow_redirects,
+            auth=auth,
         )
 
     async def _sleep_backoff(self, attempt: int) -> None:
