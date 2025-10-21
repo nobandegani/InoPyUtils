@@ -65,35 +65,47 @@ class InoHttpHelper:
         else:
             self._auth = auth
 
-        timeout = aiohttp.ClientTimeout(
+        # Defer creating the actual aiohttp.ClientSession until we are inside a running event loop.
+        self._timeout_params = dict(
             total=timeout_total,
             connect=timeout_connect,
             sock_connect=timeout_sock_connect,
             sock_read=timeout_sock_read,
         )
-        connector = aiohttp.TCPConnector(limit=limit, limit_per_host=limit_per_host)
-
-        self._session = aiohttp.ClientSession(
-            timeout=timeout,
-            connector=connector,
-            headers=self._default_headers,
-            trust_env=trust_env,
-            auth=self._auth,
-        )
+        self._connector_params = dict(limit=limit, limit_per_host=limit_per_host)
+        self._trust_env = trust_env
+        self._session: Optional[aiohttp.ClientSession] = None
 
     # Async context manager support
     async def __aenter__(self) -> "InoHttpHelper":
+        await self._ensure_session()
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.close()
+
+    async def _ensure_session(self) -> None:
+        """
+        Lazily create the aiohttp.ClientSession when an event loop is running.
+        Safe to call multiple times.
+        """
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(**self._timeout_params)
+            connector = aiohttp.TCPConnector(**self._connector_params)
+            self._session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+                headers=self._default_headers,
+                trust_env=self._trust_env,
+                auth=self._auth,
+            )
 
     @property
     def session(self) -> aiohttp.ClientSession:
         return self._session
 
     async def close(self) -> None:
-        if not self._session.closed:
+        if self._session is not None and not self._session.closed:
             await self._session.close()
 
     # Core request with retry
@@ -114,6 +126,7 @@ class InoHttpHelper:
     ) -> Dict[str, Any]:
         full_url = self._compose_url(url)
         merged_headers = self._merge_headers(headers)
+        await self._ensure_session()
         # Normalize per-request auth override
         if isinstance(auth, tuple):
             auth_obj: Optional[aiohttp.BasicAuth] = aiohttp.BasicAuth(auth[0], auth[1])
