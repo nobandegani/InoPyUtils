@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inopyutils"
-version = "1.3.3"
+version = "1.3.4"
 authors = [
     { name = "Inoland", email = "contact@inoland.net" },
 ]
@@ -30,6 +30,7 @@ dependencies = [
     "aiofiles",
     "aiohttp",
     "botocore",
+    "boto3",
 ]
 
 [tool.setuptools.packages.find]

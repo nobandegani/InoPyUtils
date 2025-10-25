@@ -1,11 +1,11 @@
 # InoPyUtils
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
-[![Version](https://img.shields.io/badge/version-1.3.2-green)](https://pypi.org/project/inopyutils/)
+[![Version](https://img.shields.io/badge/version-1.3.4-green)](https://pypi.org/project/inopyutils/)
 [![License](https://img.shields.io/badge/license-MPL--2.0-orange)](LICENSE)
 [![Development Status](https://img.shields.io/badge/status-beta-yellow)](https://pypi.org/project/inopyutils/)
 
-A comprehensive Python utility library designed for modern development workflows, featuring S3-compatible storage operations, advanced JSON processing, media handling, file management, configuration management, and structured logging.
+A comprehensive Python utility library designed for modern development workflows, featuring S3-compatible storage operations, advanced JSON processing, media handling, file management, configuration management, structured logging, an async HTTP client, and audio processing utilities.
 
 ---
 
@@ -101,6 +101,47 @@ differences = InoJsonHelper.compare(old_data, new_data)
 
 ---
 
+### 🌐 HTTP Client (`InoHttpHelper`)
+High-level asynchronous HTTP client built on aiohttp with robust retry, backoff, timeouts, and base URL support.
+
+**Features:**
+- **Configurable Timeouts** - Total/connect/read/socket timeouts per request/session
+- **Automatic Retries** - Exponential backoff for transient errors (429, 5xx)
+- **Base URL & Headers** - Compose relative URLs and merge default headers
+- **Auth Support** - BasicAuth or (username, password)
+- **Flexible Responses** - JSON, text, or raw bytes
+
+```python
+from inopyutils import InoHttpHelper
+
+# Create a reusable client with sensible defaults
+client = InoHttpHelper(
+    base_url="https://api.example.com",
+    timeout_total=30.0,
+    retries=3,
+    backoff_factor=0.7,
+    default_headers={"User-Agent": "InoPyUtils/1.3.4"},
+)
+
+# Simple GET returning JSON
+resp = await client.get("/users/42", json=True)
+
+# POST JSON and read JSON response
+resp = await client.post(
+    "/items",
+    json={"name": "Widget", "price": 9.99},
+    json_response=True,
+)
+
+# Download raw bytes
+image_bytes = await client.get("/images/logo.png", return_bytes=True)
+
+# Clean up when done (if not using async context manager)
+await client.close()
+```
+
+---
+
 ### 📁 File Management (`InoFileHelper`)
 Robust file and folder operations with advanced features for batch processing, archiving, and media validation.
 
@@ -186,6 +227,60 @@ await InoMediaHelper.video_convert_ffmpeg(
 # Media validation
 is_valid_image = await InoMediaHelper.validate_image(Path("image.jpg"))
 is_valid_video = await InoMediaHelper.validate_video(Path("video.mp4"))
+```
+
+---
+
+### 🔊 Audio Processing (`InoAudioHelper`)
+High-level audio utilities for working with raw PCM streams and common container formats.
+
+**Features:**
+- **PCM Transcoding** - Convert raw PCM bytes to OGG/Opus or WAV with codec and quality controls
+- **Decode to PCM** - Turn common audio bytes (e.g., OGG/MP3/WAV) into raw PCM for streaming/processing
+- **Chunking** - Split PCM into fixed-size chunks for streaming to APIs
+- **Duration Estimation** - Estimate speech duration from text (WPM-based)
+- **Silence Generation** - Generate silent PCM buffers for padding or composition
+
+```python
+from inopyutils import InoAudioHelper
+
+# Load an audio file as bytes (example OGG)
+with open("audio.ogg", "rb") as f:
+    ogg_bytes = f.read()
+
+# Decode audio bytes to raw PCM (s16le, 16kHz, mono)
+pcm_bytes = InoAudioHelper.audio_to_raw_pcm(
+    ogg_bytes,
+    to_format="s16le",
+    rate=16000,
+    channel=1,
+)
+
+# Transcode PCM to OGG/Opus with VOIP application profile
+ogg_opus = InoAudioHelper.transcode_raw_pcm(
+    pcm_bytes,
+    output="ogg",
+    codec="libopus",
+    to_format="s16le",
+    application="voip",
+    rate=16000,
+    channel=1,
+)
+
+# Stream PCM in fixed-size chunks (e.g., 3200 bytes ~100ms at 16kHz mono s16le)
+for chunk in InoAudioHelper.chunks_raw_pcm(pcm_bytes, chunk_size=3200):
+    pass  # send chunk to your streaming endpoint
+
+# Estimate TTS duration for pacing
+seconds = InoAudioHelper.get_audio_duration_from_text("Hello world", wpm=160.0)
+
+# Produce 2 seconds of silence PCM
+silence_pcm = InoAudioHelper.get_empty_audio_pcm_bytes(
+    duration=2,
+    to_format="s16le",
+    rate=16000,
+    channel=1,
+)
 ```
 
 ---
@@ -293,7 +388,9 @@ pip install -e ".[dev]"
 - **opencv-python** - Advanced video processing capabilities
 - **aioboto3** - Asynchronous AWS S3 operations
 - **aiofiles** - Asynchronous file I/O operations
+- **aiohttp** - Asynchronous HTTP client used by InoHttpHelper
 - **botocore** - AWS core functionality and exception handling
+- **boto3** - AWS SDK for Python
 - **inocloudreve** - Extended cloud storage integration
 
 ### Optional Dependencies
@@ -332,7 +429,7 @@ python -m pytest tests/
 
 ## 📊 Project Status
 
-- **Current Version**: 1.1.3
+- **Current Version**: 1.3.4
 - **Development Status**: Beta
 - **Python Support**: 3.9+
 - **License**: Mozilla Public License 2.0
