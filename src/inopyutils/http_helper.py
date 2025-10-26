@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Mapping, MutableMapping, Optional, Tuple, Union
+import os
+from pathlib import Path
+from typing import Any, Dict, Mapping, MutableMapping, Optional, Tuple, Union, Callable
 
 import aiohttp
 
@@ -394,6 +396,243 @@ class InoHttpHelper:
             allow_redirects=allow_redirects,
             auth=auth,
         )
+
+    async def download(
+        self,
+        url: str,
+        dest_path: Union[str, os.PathLike],
+        *,
+        params: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+        chunk_size: int = 1024 * 1024,
+        overwrite: bool = False,
+        resume: bool = True,
+        progress: Optional[Callable[[int, Optional[int]], Any]] = None,
+        timeout: Optional[aiohttp.ClientTimeout] = None,
+        allow_redirects: bool = True,
+        auth: Optional[Union[aiohttp.BasicAuth, Tuple[str, str]]] = None,
+        temp_suffix: str = ".part",
+        mkdirs: bool = True,
+        verify_size: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Stream-download a file to disk without loading it into memory.
+
+        - Resumable (HTTP Range) downloads when `resume=True` and a temp file exists.
+        - Retries with exponential backoff like other helper methods.
+        - Reports progress via a callback: progress(downloaded_bytes, total_bytes_or_None).
+        - Atomic finalization: writes to temp file and renames to destination on success.
+
+        Returns a dict like other methods with keys: success, msg, status_code, headers, data={"path", "bytes"}, url, method, attempts.
+        """
+        await self._ensure_session()
+        full_url = self._compose_url(url)
+        merged_headers = self._merge_headers(headers)
+
+        # Normalize per-request auth override
+        if isinstance(auth, tuple):
+            auth_obj: Optional[aiohttp.BasicAuth] = aiohttp.BasicAuth(auth[0], auth[1])
+        else:
+            auth_obj = auth
+
+        dest = Path(dest_path)
+        tmp = dest.with_suffix(dest.suffix + temp_suffix)
+        if mkdirs:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+        if dest.exists() and not overwrite:
+            return {
+                "success": False,
+                "msg": f"Destination exists and overwrite=False: {dest}",
+                "status_code": None,
+                "headers": {},
+                "data": None,
+                "url": full_url,
+                "method": "GET",
+                "attempts": 0,
+            }
+
+        attempts = self._retries + 1
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, attempts + 1):
+            start_offset = tmp.stat().st_size if resume and tmp.exists() else 0
+            # Set Range header if resuming and not already provided
+            req_headers = dict(merged_headers)
+            if start_offset > 0 and "Range" not in {k.title(): v for k, v in req_headers.items()}:
+                req_headers["Range"] = f"bytes={start_offset}-"
+
+            try:
+                async with self._session.get(
+                    full_url,
+                    params=params,
+                    headers=req_headers,
+                    timeout=timeout,
+                    allow_redirects=allow_redirects,
+                    auth=auth_obj,
+                ) as resp:
+                    status = resp.status
+                    if self._raise_for_status and status >= 400:
+                        resp.raise_for_status()
+
+                    # Retry on configured statuses
+                    if status in self._retry_for_statuses and attempt < attempts:
+                        await self._sleep_backoff(attempt)
+                        continue
+
+                    # Handle resume/non-resume semantics
+                    if start_offset > 0 and status == 200:
+                        # Server ignored range; restart from scratch
+                        try:
+                            tmp.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        start_offset = 0
+
+                    # Determine expected total size
+                    total_size: Optional[int] = None
+                    content_length = resp.headers.get("Content-Length")
+                    if content_length and content_length.isdigit():
+                        total_size = int(content_length)
+                        if status == 206:
+                            # For partial content, Content-Length is remaining part; total is start + remaining
+                            total_size = start_offset + int(content_length)
+                    # Try Content-Range for 206
+                    if status == 206 and total_size is None:
+                        cr = resp.headers.get("Content-Range")
+                        # Format: bytes start-end/total
+                        if cr and "/" in cr:
+                            try:
+                                total_part = cr.split("/")[-1]
+                                if total_part.isdigit():
+                                    total_size = int(total_part)
+                            except Exception:
+                                total_size = None
+
+                    mode = "ab" if start_offset > 0 else "wb"
+                    bytes_downloaded = start_offset
+
+                    if progress:
+                        try:
+                            progress(bytes_downloaded, total_size)
+                        except Exception:
+                            # Don't fail download because of progress callback
+                            pass
+
+                    with open(tmp, mode) as f:
+                        async for chunk in resp.content.iter_chunked(max(1, int(chunk_size))):
+                            if not chunk:
+                                continue
+                            f.write(chunk)
+                            bytes_downloaded += len(chunk)
+                            if progress:
+                                try:
+                                    progress(bytes_downloaded, total_size)
+                                except Exception:
+                                    pass
+
+                    # Verify size if requested and known
+                    if verify_size and total_size is not None and bytes_downloaded != total_size:
+                        # Size mismatch: consider retry if attempts left
+                        raise IOError(
+                            f"Downloaded size mismatch: got {bytes_downloaded}, expected {total_size}"
+                        )
+
+                    # Finalize: replace destination atomically
+                    try:
+                        if dest.exists():
+                            os.replace(tmp, dest)
+                        else:
+                            tmp.replace(dest)
+                    except FileNotFoundError:
+                        # Parent may have been deleted concurrently; recreate and retry replace
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(tmp, dest)
+
+                    headers_out = {k: v for k, v in resp.headers.items()}
+                    return {
+                        "success": True,
+                        "msg": resp.reason or "",
+                        "status_code": status,
+                        "headers": headers_out,
+                        "data": {"path": str(dest), "bytes": bytes_downloaded},
+                        "url": full_url,
+                        "method": "GET",
+                        "attempts": attempt,
+                    }
+
+            except aiohttp.ClientResponseError as cre:
+                last_exc = cre
+                if getattr(cre, "status", None) in self._retry_for_statuses and attempt < attempts:
+                    await self._sleep_backoff(attempt)
+                    continue
+                return {
+                    "success": False,
+                    "msg": str(cre),
+                    "status_code": getattr(cre, "status", None),
+                    "headers": {},
+                    "data": None,
+                    "url": full_url,
+                    "method": "GET",
+                    "attempts": attempt,
+                }
+            except (aiohttp.ClientConnectionError, aiohttp.ServerTimeoutError, aiohttp.ClientOSError, aiohttp.TooManyRedirects) as ce:
+                last_exc = ce
+                if attempt < attempts:
+                    await self._sleep_backoff(attempt)
+                    continue
+                return {
+                    "success": False,
+                    "msg": str(ce),
+                    "status_code": None,
+                    "headers": {},
+                    "data": None,
+                    "url": full_url,
+                    "method": "GET",
+                    "attempts": attempt,
+                }
+            except asyncio.TimeoutError as te:
+                last_exc = te
+                if attempt < attempts:
+                    await self._sleep_backoff(attempt)
+                    continue
+                return {
+                    "success": False,
+                    "msg": "Request timed out: " + str(te),
+                    "status_code": None,
+                    "headers": {},
+                    "data": None,
+                    "url": full_url,
+                    "method": "GET",
+                    "attempts": attempt,
+                }
+            except Exception as e:
+                # For IO errors or size mismatch etc., retry if possible
+                last_exc = e
+                if attempt < attempts:
+                    await self._sleep_backoff(attempt)
+                    continue
+                return {
+                    "success": False,
+                    "msg": str(e),
+                    "status_code": None,
+                    "headers": {},
+                    "data": None,
+                    "url": full_url,
+                    "method": "GET",
+                    "attempts": attempt,
+                }
+
+        # If all attempts failed
+        return {
+            "success": False,
+            "msg": str(last_exc) if last_exc else "Download failed",
+            "status_code": getattr(last_exc, "status", None) if last_exc else None,
+            "headers": {},
+            "data": None,
+            "url": full_url,
+            "method": "GET",
+            "attempts": attempts,
+        }
 
     async def _sleep_backoff(self, attempt: int) -> None:
         delay = self._backoff_factor * (2 ** (attempt - 1))
