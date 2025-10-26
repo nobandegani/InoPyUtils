@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Tuple, Union, Callable
 
 import aiohttp
+import mimetypes
+import re
+from urllib.parse import urlparse, unquote
 
 class InoHttpHelper:
     """
@@ -414,16 +417,22 @@ class InoHttpHelper:
         temp_suffix: str = ".part",
         mkdirs: bool = True,
         verify_size: bool = True,
+        filename: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Stream-download a file to disk without loading it into memory.
+
+        Enhancements:
+        - dest_path can be a directory. If it is, filename param or auto-derivation will determine the final file name.
+        - Optional filename parameter to force the file name.
+        - Auto-derives filename using Content-Disposition, final URL path, Content-Type, then fallback.
 
         - Resumable (HTTP Range) downloads when `resume=True` and a temp file exists.
         - Retries with exponential backoff like other helper methods.
         - Reports progress via a callback: progress(downloaded_bytes, total_bytes_or_None).
         - Atomic finalization: writes to temp file and renames to destination on success.
 
-        Returns a dict like other methods with keys: success, msg, status_code, headers, data={"path", "bytes"}, url, method, attempts.
+        Returns a dict like other methods with keys: success, msg, status_code, headers, data={"path", "bytes", "filename"}, url, method, attempts.
         """
         await self._ensure_session()
         full_url = self._compose_url(url)
@@ -435,10 +444,31 @@ class InoHttpHelper:
         else:
             auth_obj = auth
 
-        dest = Path(dest_path)
-        tmp = dest.with_suffix(dest.suffix + temp_suffix)
+        # Decide whether dest_path is a directory or a full file path
+        dest_in = Path(dest_path)
+        is_dir_hint = dest_in.exists() and dest_in.is_dir()
+        if not is_dir_hint:
+            text = str(dest_in)
+            if text.endswith((os.sep, "/")) or (not dest_in.exists() and dest_in.suffix == ""):
+                is_dir_hint = True
+
+        # Base directory where the file should be saved
+        base_dir = dest_in if is_dir_hint else dest_in.parent
         if mkdirs:
-            dest.parent.mkdir(parents=True, exist_ok=True)
+            base_dir.mkdir(parents=True, exist_ok=True)
+
+        # Provisional filename decision before request (enables resume temp file)
+        if filename:
+            chosen_name = filename
+        elif not is_dir_hint:
+            chosen_name = dest_in.name
+        else:
+            # Try to get something from the URL path; fallback to 'download'
+            url_name = Path(unquote(urlparse(full_url).path)).name
+            chosen_name = url_name if (url_name and "." in url_name and not url_name.startswith(".")) else "download"
+
+        dest = base_dir / chosen_name
+        tmp = dest.with_suffix(dest.suffix + temp_suffix)
 
         if dest.exists() and not overwrite:
             return {
@@ -508,6 +538,54 @@ class InoHttpHelper:
                             except Exception:
                                 total_size = None
 
+                    # If dest was a directory and no explicit filename, try to derive a better final name now
+                    if is_dir_hint and not filename:
+                        headers_out_case = {k: v for k, v in resp.headers.items()}
+                        # Best-effort filename derivation
+                        cd = headers_out_case.get("Content-Disposition") or headers_out_case.get("content-disposition") or ""
+                        derived: Optional[str] = None
+                        if cd:
+                            m = re.search(r"filename\*=([^']*)''([^;]+)", cd)
+                            if m:
+                                derived = unquote(m.group(2).strip())
+                            if not derived:
+                                m = re.search(r'filename\s*=\s*"([^"]+)"', cd)
+                                if m:
+                                    derived = m.group(1).strip()
+                            if not derived:
+                                m = re.search(r"filename\s*=\s*([^;]+)", cd)
+                                if m:
+                                    derived = m.group(1).strip().strip("'\"")
+                        if not derived:
+                            path_name = Path(unquote(urlparse(str(resp.url)).path)).name
+                            if path_name and not path_name.endswith("/") and "." in path_name and not path_name.startswith("."):
+                                derived = path_name
+                        # Extension from content-type if missing
+                        ext = Path(derived).suffix if derived else ""
+                        if not ext:
+                            ctype = (headers_out_case.get("Content-Type") or headers_out_case.get("content-type") or "").split(";")[0].strip().lower()
+                            if ctype:
+                                guessed = mimetypes.guess_extension(ctype, strict=False)
+                                if guessed:
+                                    ext = guessed
+                        if not derived:
+                            derived = "download" + (ext or "")
+                        if derived and derived != dest.name:
+                            candidate = base_dir / derived
+                            if candidate.exists() and not overwrite:
+                                return {
+                                    "success": False,
+                                    "msg": f"Destination exists and overwrite=False: {candidate}",
+                                    "status_code": None,
+                                    "headers": {},
+                                    "data": None,
+                                    "url": full_url,
+                                    "method": "GET",
+                                    "attempts": attempt,
+                                }
+                            # do not change tmp to preserve resume continuity; only change final dest
+                            dest = candidate
+
                     mode = "ab" if start_offset > 0 else "wb"
                     bytes_downloaded = start_offset
 
@@ -554,7 +632,7 @@ class InoHttpHelper:
                         "msg": resp.reason or "",
                         "status_code": status,
                         "headers": headers_out,
-                        "data": {"path": str(dest), "bytes": bytes_downloaded},
+                        "data": {"path": str(dest), "bytes": bytes_downloaded, "filename": Path(dest).name},
                         "url": full_url,
                         "method": "GET",
                         "attempts": attempt,
