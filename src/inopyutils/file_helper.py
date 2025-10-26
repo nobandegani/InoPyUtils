@@ -3,6 +3,7 @@ import asyncio, os
 import json
 import shutil
 import re
+import hashlib
 from pathlib import Path
 import aiofiles
 from .media_helper import InoMediaHelper
@@ -511,4 +512,47 @@ class InoFileHelper:
             return {
                 "success": False,
                 "msg": f"❌ Failed to save string to '{save_path}': {e}",
+            }
+
+    @staticmethod
+    async def get_file_hash_sha_256(file_path: Path) -> dict:
+        """
+        Asynchronously calculate the SHA-256 hash of the given file using aiofiles.
+
+        Args:
+            file_path: Path to the file to hash.
+
+        Returns:
+            dict with keys:
+              - success (bool)
+              - msg (str)
+              - sha (str, hex digest) when success=True
+        """
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                return {"success": False, "msg": f"❌ Path not found: {path}"}
+            if not path.is_file():
+                return {"success": False, "msg": f"❌ Not a file: {path}"}
+
+            sha256 = hashlib.sha256()
+            # Use a reasonable chunk size to support large files
+            chunk_size = 1024 * 1024  # 1 MiB
+            async with aiofiles.open(path, "rb") as f:
+                while True:
+                    chunk = await f.read(chunk_size)
+                    if not chunk:
+                        break
+                    sha256.update(chunk)
+
+            digest = sha256.hexdigest()
+            return {
+                "success": True,
+                "msg": f"✅ SHA-256 computed for '{path.name}'",
+                "sha": digest,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "msg": f"❌ Failed to compute SHA-256 for '{file_path}': {e}",
             }
