@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Tuple, Union, Callable
 
+from datetime import datetime
+
 import aiohttp
 import mimetypes
 import re
@@ -465,7 +467,8 @@ class InoHttpHelper:
         else:
             # Try to get something from the URL path; fallback to 'download'
             url_name = Path(unquote(urlparse(full_url).path)).name
-            chosen_name = url_name if (url_name and "." in url_name and not url_name.startswith(".")) else "download"
+            datetime_str = datetime.now().strftime("%Y%m%d%H%M%S") + f"{datetime.now().microsecond:06d}"
+            chosen_name = url_name if (url_name and "." in url_name and not url_name.startswith(".")) else datetime_str
 
         dest = base_dir / chosen_name
         tmp = dest.with_suffix(dest.suffix + temp_suffix)
