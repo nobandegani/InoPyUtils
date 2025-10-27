@@ -82,15 +82,15 @@ class InoLogHelper:
             async with aiofiles.open(self.log_file, 'w', encoding='utf-8') as f:
                 pass
 
-    async def add(self, log_type: LogType = None, msg: str = "", log_data: dict = None, source: str = None) -> None:
+    async def add(self, log_type: LogType | None = None, msg: str = "", log_data: dict | None = None, source: str | None = None) -> None:
         """
         Append a log entry to the log file in JSON-lines format with comprehensive metadata.
 
         Args:
-            log_data (dict): Dictionary of log details to record.
+            log_data (dict | None): Dictionary of log details to record.
             msg (str): Message to record along with the log details.
-            log_type (LogCategory): Enum value denoting the log category.
-            source (str): Optional source identifier (function, class, module name).
+            log_type (LogType | None): Enum value denoting the log category. If None, inferred from log_data.success.
+            source (str | None): Optional source identifier (function, class, module name).
         """
 
         await self._ensure_initialized()
@@ -98,17 +98,20 @@ class InoLogHelper:
         if self.log_file.exists() and self.log_file.stat().st_size >= self.max_file_size_bytes:
             await self._create_log_file()
 
+        # Determine effective log type
         if log_type is None:
             if isinstance(log_data, dict) and "success" in log_data:
-                category = LogType.INFO if log_data.get("success") else LogType.ERROR
+                effective_type = LogType.INFO if log_data.get("success") else LogType.ERROR
             else:
-                category = LogType.INFO
+                effective_type = LogType.INFO
+        else:
+            effective_type = log_type
 
         now = datetime.datetime.now()
         entry = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
             "iso_timestamp": now.isoformat(),
-            "type": log_type.value,
+            "type": effective_type.value,
             "source": source,
             "msg": msg,
             "data": log_data
@@ -119,25 +122,25 @@ class InoLogHelper:
         async with aiofiles.open(self.log_file, "a", encoding="utf-8") as f:
             await f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
 
-    async def debug(self, msg: str = "", log_data: dict = None, source: str = None) -> None:
+    async def debug(self, msg: str = "", log_data: dict | None = None, source: str | None = None) -> None:
         """Convenience method for DEBUG level logs."""
         await self.add(LogType.DEBUG, msg, log_data, source)
 
-    async def info(self, msg: str = "", log_data: dict = None, source: str = None) -> None:
+    async def info(self, msg: str = "", log_data: dict | None = None, source: str | None = None) -> None:
         """Convenience method for INFO level logs."""
         await self.add(LogType.INFO, msg, log_data, source)
 
-    async def warning(self, msg: str = "", log_data: dict = None, source: str = None) -> None:
+    async def warning(self, msg: str = "", log_data: dict | None = None, source: str | None = None) -> None:
         """Convenience method for WARNING level logs."""
-        await self.add(LogType.INFO, msg, log_data, source)
+        await self.add(LogType.WARNING, msg, log_data, source)
 
-    async def error(self, msg: str = "", log_data: dict = None, source: str = None) -> None:
+    async def error(self, msg: str = "", log_data: dict | None = None, source: str | None = None) -> None:
         """Convenience method for ERROR level logs."""
-        await self.add(LogType.INFO, msg, log_data, source)
+        await self.add(LogType.ERROR, msg, log_data, source)
 
-    async def critical(self, msg: str = "", log_data: dict = None, source: str = None) -> None:
+    async def critical(self, msg: str = "", log_data: dict | None = None, source: str | None = None) -> None:
         """Convenience method for CRITICAL level logs."""
-        await self.add(LogType.INFO, msg, log_data, source)
+        await self.add(LogType.CRITICAL, msg, log_data, source)
 
     def get_log_file_path(self) -> Path:
         """Get the current log file path."""
