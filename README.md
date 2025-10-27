@@ -1,7 +1,7 @@
 # InoPyUtils
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
-[![Version](https://img.shields.io/badge/version-1.3.4-green)](https://pypi.org/project/inopyutils/)
+[![Version](https://img.shields.io/badge/version-1.3.6-green)](https://pypi.org/project/inopyutils/)
 [![License](https://img.shields.io/badge/license-MPL--2.0-orange)](LICENSE)
 [![Development Status](https://img.shields.io/badge/status-beta-yellow)](https://pypi.org/project/inopyutils/)
 
@@ -35,25 +35,30 @@ Universal cloud storage solution supporting **AWS S3**, **Backblaze B2**, **Digi
 - **Batch Operations** - Efficient bulk file operations
 
 ```python
+import asyncio
 from inopyutils import InoS3Helper
 
-# Initialize with Backblaze B2
-s3_client = InoS3Helper(
-    aws_access_key_id='your_key_id',
-    aws_secret_access_key='your_secret_key',
-    endpoint_url='https://s3.us-west-004.backblazeb2.com',
-    region_name='us-west-004',
-    bucket_name='your-bucket',
-    retries=5
-)
+async def main():
+    # Initialize with Backblaze B2
+    s3_client = InoS3Helper(
+        aws_access_key_id='your_key_id',
+        aws_secret_access_key='your_secret_key',
+        endpoint_url='https://s3.us-west-004.backblazeb2.com',
+        region_name='us-west-004',
+        bucket_name='your-bucket',
+        retries=5
+    )
 
-# Async file operations
-await s3_client.upload_file('local_file.txt', 'remote/path/file.txt')
-await s3_client.download_file('remote/path/file.txt', 'downloaded_file.txt')
+    # Async file operations
+    await s3_client.upload_file('local_file.txt', 'remote/path/file.txt')
+    await s3_client.download_file('remote/path/file.txt', 'downloaded_file.txt')
 
-# Check file existence and get metadata
-exists = await s3_client.file_exists('remote/path/file.txt')
-objects = await s3_client.list_objects(prefix='remote/path/')
+    # Check file existence and list objects
+    exists = await s3_client.object_exists('remote/path/file.txt')
+    listed = await s3_client.list_objects(prefix='remote/path/')
+    print(exists, listed)
+
+asyncio.run(main())
 ```
 
 ---
@@ -70,33 +75,45 @@ Comprehensive JSON manipulation toolkit with both synchronous and asynchronous o
 - **Array Search** - Find specific elements in complex nested arrays
 
 ```python
+import asyncio
 from inopyutils import InoJsonHelper
 
-# String/Dict conversions with error handling
-result = InoJsonHelper.string_to_dict('{"key": "value"}')
-if result["success"]:
-    data = result["data"]
+def demo_sync_ops():
+    # String/Dict conversions with error handling
+    result = InoJsonHelper.string_to_dict('{"key": "value"}')
+    data = result.get("data") if result.get("success") else {}
 
-# Async file operations
-await InoJsonHelper.save_json_as_json_async({"config": "data"}, "config.json")
-loaded = await InoJsonHelper.read_json_from_file_async("config.json")
+    # Deep operations
+    dict1 = {"a": 1, "nested": {"x": 10}}
+    dict2 = {"b": 2, "nested": {"y": 20}}
+    merged = InoJsonHelper.deep_merge(dict1, dict2)
+    flattened = InoJsonHelper.flatten({"a": {"b": {"c": 1}}})  # {"a.b.c": 1}
+    original = InoJsonHelper.unflatten({"a.b.c": 1})  # {"a": {"b": {"c": 1}}}
 
-# Deep operations
-merged = InoJsonHelper.deep_merge(dict1, dict2)
-flattened = InoJsonHelper.flatten({"a": {"b": {"c": 1}}})  # {"a.b.c": 1}
-original = InoJsonHelper.unflatten({"a.b.c": 1})  # {"a": {"b": {"c": 1}}}
+    # Safe path operations
+    value = InoJsonHelper.safe_get(data, "user.profile.name", default="Unknown")
+    InoJsonHelper.safe_set(data, "user.profile.age", 25)
 
-# Safe path operations
-value = InoJsonHelper.safe_get(data, "user.profile.name", default="Unknown")
-InoJsonHelper.safe_set(data, "user.profile.age", 25)
+    # Advanced filtering and searching
+    cleaned = InoJsonHelper.remove_null_values(data or {}, remove_empty=True)
+    filtered = InoJsonHelper.filter_keys({"name":"Ann","email":"a@b"}, ["name", "email"], deep=True)
+    found = InoJsonHelper.find_field_from_array([
+        {"id": "user_123", "n": 1}, {"id": "user_999", "n": 2}
+    ], "id", "user_123")
 
-# Advanced filtering and searching
-cleaned = InoJsonHelper.remove_null_values(data, remove_empty=True)
-filtered = InoJsonHelper.filter_keys(data, ["name", "email"], deep=True)
-found = InoJsonHelper.find_field_from_array(data, "id", "user_123")
+    # Data comparison with detailed diff
+    old_data = {"a": 1}
+    new_data = {"a": 2}
+    differences = InoJsonHelper.compare(old_data, new_data)
 
-# Data comparison with detailed diff
-differences = InoJsonHelper.compare(old_data, new_data)
+async def demo_async_ops():
+    await InoJsonHelper.save_json_as_json_async({"config": "data"}, "config.json")
+    loaded = await InoJsonHelper.read_json_from_file_async("config.json")
+    print(loaded)
+
+if __name__ == "__main__":
+    demo_sync_ops()
+    asyncio.run(demo_async_ops())
 ```
 
 ---
@@ -112,32 +129,36 @@ High-level asynchronous HTTP client built on aiohttp with robust retry, backoff,
 - **Flexible Responses** - JSON, text, or raw bytes
 
 ```python
+import asyncio
 from inopyutils import InoHttpHelper
 
-# Create a reusable client with sensible defaults
-client = InoHttpHelper(
-    base_url="https://api.example.com",
-    timeout_total=30.0,
-    retries=3,
-    backoff_factor=0.7,
-    default_headers={"User-Agent": "InoPyUtils/1.3.4"},
-)
+async def main():
+    # Create a reusable client with sensible defaults
+    client = InoHttpHelper(
+        base_url="https://api.example.com",
+        timeout_total=30.0,
+        retries=3,
+        backoff_factor=0.7,
+        default_headers={"User-Agent": "InoPyUtils/1.3.4"},
+    )
 
-# Simple GET returning JSON
-resp = await client.get("/users/42", json=True)
+    # Simple GET returning JSON
+    resp = await client.get("/users/42", json=True)
 
-# POST JSON and read JSON response
-resp = await client.post(
-    "/items",
-    json={"name": "Widget", "price": 9.99},
-    json_response=True,
-)
+    # POST JSON and read JSON response
+    resp = await client.post(
+        "/items",
+        json={"name": "Widget", "price": 9.99},
+        json_response=True,
+    )
 
-# Download raw bytes
-image_bytes = await client.get("/images/logo.png", return_bytes=True)
+    # Download raw bytes
+    image_bytes = await client.get("/images/logo.png", return_bytes=True)
 
-# Clean up when done (if not using async context manager)
-await client.close()
+    # Clean up when done (if not using async context manager)
+    await client.close()
+
+asyncio.run(main())
 ```
 
 ---
@@ -156,8 +177,8 @@ Robust file and folder operations with advanced features for batch processing, a
 from inopyutils import InoFileHelper
 from pathlib import Path
 
-# Create compressed archives
-await InoFileHelper.zip(
+# Create compressed archives (synchronous)
+InoFileHelper.zip(
     to_zip=Path("source_folder"),
     path_to_save=Path("archives"),
     zip_file_name="backup.zip",
@@ -179,8 +200,8 @@ file_count = InoFileHelper.count_files(Path("folder"), recursive=True)
 latest_file = InoFileHelper.get_last_file(Path("folder"))
 batch_name = InoFileHelper.increment_batch_name("Batch_001")  # "Batch_002"
 
-# Media validation and conversion
-await InoFileHelper.validate_files(
+# Media validation and conversion (synchronous)
+InoFileHelper.validate_files(
     input_path=Path("media_folder"),
     include_image=True,
     include_video=True,
@@ -202,31 +223,37 @@ Professional-grade media processing with FFmpeg integration and Pillow-based ima
 - **Batch Operations** - Process multiple files efficiently
 
 ```python
+import asyncio
 from inopyutils import InoMediaHelper
 from pathlib import Path
 
-# Advanced image processing
-await InoMediaHelper.image_validate_pillow(
-    input_path=Path("photo.heic"),
-    output_path=Path("converted.jpg"),
-    max_res=2048,
-    jpg_quality=85,
-    png_compress_level=6
-)
+async def main():
+    # Advanced image processing
+    res1 = await InoMediaHelper.image_validate_pillow(
+        input_path=Path("photo.heic"),
+        output_path=Path("converted.jpg"),
+        max_res=2048,
+        jpg_quality=85,
+    )
+    print(res1)
 
-# Video processing with quality control
-await InoMediaHelper.video_convert_ffmpeg(
-    input_path=Path("input.mov"),
-    output_path=Path("optimized.mp4"),
-    change_res=True,
-    max_res=1920,
-    change_fps=True,
-    max_fps=30
-)
+    # Video processing with quality control
+    res2 = await InoMediaHelper.video_convert_ffmpeg(
+        input_path=Path("input.mov"),
+        output_path=Path("optimized.mp4"),
+        change_res=True,
+        max_res=1920,
+        change_fps=True,
+        max_fps=30
+    )
+    print(res2)
 
-# Media validation
-is_valid_image = await InoMediaHelper.validate_image(Path("image.jpg"))
-is_valid_video = await InoMediaHelper.validate_video(Path("video.mp4"))
+    # Video checks (synchronous helpers)
+    info = InoMediaHelper.validate_video_res_fps(Path("optimized.mp4"))
+    fps = InoMediaHelper.get_video_fps(Path("optimized.mp4"))
+    print(info, fps)
+
+asyncio.run(main())
 ```
 
 ---
@@ -242,45 +269,54 @@ High-level audio utilities for working with raw PCM streams and common container
 - **Silence Generation** - Generate silent PCM buffers for padding or composition
 
 ```python
+import asyncio
 from inopyutils import InoAudioHelper
 
-# Load an audio file as bytes (example OGG)
-with open("audio.ogg", "rb") as f:
-    ogg_bytes = f.read()
+async def main():
+    # Load an audio file as bytes (example OGG)
+    with open("audio.ogg", "rb") as f:
+        ogg_bytes = f.read()
 
-# Decode audio bytes to raw PCM (s16le, 16kHz, mono)
-pcm_bytes = InoAudioHelper.audio_to_raw_pcm(
-    ogg_bytes,
-    to_format="s16le",
-    rate=16000,
-    channel=1,
-)
+    # Decode audio bytes to raw PCM (s16le, 16kHz, mono)
+    dec = await InoAudioHelper.audio_to_raw_pcm(
+        ogg_bytes,
+        to_format="s16le",
+        rate=16000,
+        channel=1,
+    )
+    assert dec["success"], dec["error_code"]
+    pcm_bytes = dec["data"]
 
-# Transcode PCM to OGG/Opus with VOIP application profile
-ogg_opus = InoAudioHelper.transcode_raw_pcm(
-    pcm_bytes,
-    output="ogg",
-    codec="libopus",
-    to_format="s16le",
-    application="voip",
-    rate=16000,
-    channel=1,
-)
+    # Transcode PCM to OGG/Opus with VOIP application profile
+    enc = await InoAudioHelper.transcode_raw_pcm(
+        pcm_bytes,
+        output="ogg",
+        codec="libopus",
+        to_format="s16le",
+        application="voip",
+        rate=16000,
+        channel=1,
+    )
+    assert enc["success"], enc["error_code"]
+    ogg_opus_bytes = enc["data"]
 
-# Stream PCM in fixed-size chunks (e.g., 3200 bytes ~100ms at 16kHz mono s16le)
-for chunk in InoAudioHelper.chunks_raw_pcm(pcm_bytes, chunk_size=3200):
-    pass  # send chunk to your streaming endpoint
+    # Stream PCM in fixed-size chunks (e.g., 3200 bytes ~100ms at 16kHz mono s16le)
+    ch = await InoAudioHelper.chunks_raw_pcm(pcm_bytes, chunk_size=3200)
+    for chunk in ch["chunks"]:
+        pass  # send chunk to your streaming endpoint
 
-# Estimate TTS duration for pacing
-seconds = InoAudioHelper.get_audio_duration_from_text("Hello world", wpm=160.0)
+    # Estimate TTS duration for pacing
+    seconds = InoAudioHelper.get_audio_duration_from_text("Hello world", wpm=160.0)
 
-# Produce 2 seconds of silence PCM
-silence_pcm = InoAudioHelper.get_empty_audio_pcm_bytes(
-    duration=2,
-    to_format="s16le",
-    rate=16000,
-    channel=1,
-)
+    # Produce 2 seconds of silence PCM
+    silence_pcm = InoAudioHelper.get_empty_audio_pcm_bytes(
+        duration=2,
+        to_format="s16le",
+        rate=16000,
+        channel=1,
+    )
+
+asyncio.run(main())
 ```
 
 ---
@@ -295,20 +331,26 @@ Robust INI-based configuration management with type safety and debugging capabil
 - **Auto-Save** - Automatic persistence of configuration changes
 
 ```python
+import asyncio
 from inopyutils import InoConfigHelper
 
-# Initialize with debug logging
-config = InoConfigHelper('config/application.ini', debug=True)
+# Initialize
+config = InoConfigHelper('config/application.ini')
 
 # Type-safe configuration access
 database_url = config.get('database', 'url', fallback='sqlite:///default.db')
 debug_mode = config.get_bool('app', 'debug', fallback=False)
-max_connections = config.get_int('database', 'max_connections', fallback=10)
 
-# Configuration updates
+# Configuration updates (sync)
 config.set('api', 'endpoint', 'https://api.production.com')
-config.set_bool('features', 'cache_enabled', True)
-config.save()  # Explicit save (or auto-save if configured)
+config.save()
+
+# Or async set/save
+async def main():
+    await config.set_async('features', 'cache_enabled', True)
+    await config.save_async()
+
+asyncio.run(main())
 ```
 
 ---
@@ -324,31 +366,38 @@ Advanced logging system with automatic batching, categorization, and JSON-Lines 
 - **Timestamped** - ISO format timestamps for precise tracking
 
 ```python
-from inopyutils import InoLogHelper, LogCategory
+import asyncio
+from inopyutils import InoLogHelper, LogType
 from pathlib import Path
 
-# Initialize logger with automatic batching
-logger = InoLogHelper(Path("logs"), "MyApplication")
+async def main():
+    # Initialize logger with automatic batching
+    logger = await InoLogHelper.create(Path("logs"), "MyApplication")
 
-# Context-rich logging
-logger.add(
-    {"user_id": 12345, "action": "login", "ip": "192.168.1.100"}, 
-    "User login successful"
-)
+    # Context-rich logging
+    await logger.info(
+        msg="User login successful",
+        log_data={"user_id": 12345, "action": "login", "ip": "192.168.1.100"},
+        source="auth.login",
+    )
 
-# Categorized logging
-logger.add(
-    {"error_code": 500, "endpoint": "/api/users", "duration_ms": 1200}, 
-    "API endpoint timeout", 
-    LogCategory.ERROR
-)
+    # Categorized logging with .add
+    await logger.add(
+        LogType.ERROR,
+        msg="API endpoint timeout",
+        log_data={"error_code": 500, "endpoint": "/api/users", "duration_ms": 1200},
+        source="api.users",
+    )
 
-# Batch processing logs
-logger.add(
-    {"processed": 150, "failed": 3, "batch_id": "batch_20241009"}, 
-    "Batch processing completed",
-    LogCategory.INFO
-)
+    # Batch processing logs
+    await logger.add(
+        LogType.INFO,
+        msg="Batch processing completed",
+        log_data={"processed": 150, "failed": 3, "batch_id": "batch_20241009"},
+        source="worker.batch",
+    )
+
+asyncio.run(main())
 ```
 
 ---
