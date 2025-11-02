@@ -24,7 +24,7 @@ class InoConfigHelper:
                 return fallback
             if self.debug:
                 print(f"🔎 Raw value for [{section}][{key}] = {value} ({type(value)})")
-            if value is not None:
+            if value is not None and isinstance(value, str):
                 value = value.strip()
             return value
         except Exception as e:

@@ -590,7 +590,7 @@ class InoS3Helper:
             local_folder_path: str,
             bucket_name: Optional[str] = None,
             max_concurrent: int = 5,
-            verify: bool = True
+            verify: bool = False
     ) -> Dict[str, Any]:
         """
         Download an entire folder from S3, preserving directory structure locally
@@ -766,7 +766,7 @@ class InoS3Helper:
             local_folder_path: str,
             bucket_name: Optional[str] = None,
             max_concurrent: int = 5,
-            verify: bool = True
+            verify: bool = False
     ) -> Dict[str, Any]:
         """
         Upload an entire folder to S3, preserving directory structure
