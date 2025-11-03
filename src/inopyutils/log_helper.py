@@ -107,12 +107,14 @@ class InoLogHelper:
         else:
             effective_type = log_type
 
+        if source is None:
+            source = "unknown"
+
         now = datetime.datetime.now()
         entry = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-            "iso_timestamp": now.isoformat(),
-            "type": effective_type.value,
             "source": source,
+            "type": effective_type.value,
             "msg": msg,
             "data": log_data
         }
