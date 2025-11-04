@@ -67,10 +67,28 @@ class InoLogHelper:
 
     async def _create_log_file(self):
         """Create or rotate to a new log file."""
-        get_last_log = InoFileHelper.get_last_file(self.path)
-        if get_last_log["success"]:
-            current_file = get_last_log["file"]
-            if current_file.suffix == ".inolog" and current_file.stat().st_size < self.max_file_size_bytes:
+        # Find the last log file that matches this logger's naming scheme: {log_name}_NNNNN.inolog
+        files = [
+            p for p in self.path.iterdir()
+            if p.is_file() and p.suffix == ".inolog" and p.stem.startswith(f"{self.log_name}_")
+        ]
+
+        selected = None
+        if files:
+            import re
+
+            def parse_num(p):
+                m = re.match(rf'^{re.escape(self.log_name)}_(\d+)$', p.stem)
+                return int(m.group(1)) if m else -1
+
+            # Keep only files that strictly match {log_name}_<digits>
+            files = [p for p in files if parse_num(p) >= 0]
+            if files:
+                selected = max(files, key=lambda p: parse_num(p))
+
+        if selected is not None:
+            current_file = selected
+            if current_file.stat().st_size < self.max_file_size_bytes:
                 self.log_file = current_file
             else:
                 new_log_name = InoFileHelper.increment_batch_name(current_file.stem)
