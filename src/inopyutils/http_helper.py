@@ -10,7 +10,7 @@ import mimetypes
 import re
 from urllib.parse import urlparse, unquote
 
-from .util_helper import InoUtilHelper
+from .util_helper import InoUtilHelper, ok, err
 
 class InoHttpHelper:
     """
@@ -174,18 +174,19 @@ class InoHttpHelper:
                         body = await resp.text()
                     # Convert headers to a plain dict for ease of use
                     headers_out = {k: v for k, v in resp.headers.items()}
-                    success = resp.status < 400
-                    result: Dict[str, Any] = {
-                        "success": success,
-                        "msg": resp.reason or "",
-                        "status_code": resp.status,
+                    status = resp.status
+                    extra = {
+                        "status_code": status,
                         "headers": headers_out,
                         "data": body,
                         "url": full_url,
                         "method": method.upper(),
                         "attempts": attempt,
                     }
-                    return result
+                    if status < 400:
+                        return ok(resp.reason or "", **extra)
+                    else:
+                        return err(resp.reason or "", **extra)
 
             except aiohttp.ClientResponseError as cre:
                 # Retry on configured statuses already handled above; for explicit raise_for_status
@@ -194,69 +195,64 @@ class InoHttpHelper:
                     await self._sleep_backoff(attempt)
                     continue
                 # On last attempt or non-retryable status, return failure dict
-                return {
-                    "success": False,
-                    "msg": str(cre),
-                    "status_code": getattr(cre, "status", None),
-                    "headers": {},
-                    "data": None,
-                    "url": full_url,
-                    "method": method.upper(),
-                    "attempts": attempt,
-                }
+                return err(
+                    str(cre),
+                    status_code=getattr(cre, "status", None),
+                    headers={},
+                    data=None,
+                    url=full_url,
+                    method=method.upper(),
+                    attempts=attempt,
+                )
             except (aiohttp.ClientConnectionError, aiohttp.ServerTimeoutError, aiohttp.ClientOSError, aiohttp.TooManyRedirects) as ce:
                 last_exc = ce
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return {
-                    "success": False,
-                    "msg": str(ce),
-                    "status_code": None,
-                    "headers": {},
-                    "data": None,
-                    "url": full_url,
-                    "method": method.upper(),
-                    "attempts": attempt,
-                }
+                return err(
+                    str(ce),
+                    status_code=None,
+                    headers={},
+                    data=None,
+                    url=full_url,
+                    method=method.upper(),
+                    attempts=attempt,
+                )
             except asyncio.TimeoutError as te:
                 last_exc = te
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return {
-                    "success": False,
-                    "msg": "Request timed out: " + str(te),
-                    "status_code": None,
-                    "headers": {},
-                    "data": None,
-                    "url": full_url,
-                    "method": method.upper(),
-                    "attempts": attempt,
-                }
+                return err(
+                    "Request timed out: " + str(te),
+                    status_code=None,
+                    headers={},
+                    data=None,
+                    url=full_url,
+                    method=method.upper(),
+                    attempts=attempt,
+                )
 
         # Should not reach here; return failure dict if no response and no exception
         if last_exc:
-            return {
-                "success": False,
-                "msg": str(last_exc),
-                "status_code": getattr(last_exc, "status", None),
-                "headers": {},
-                "data": None,
-                "url": full_url,
-                "method": method.upper(),
-                "attempts": attempts,
-            }
-        return {
-            "success": False,
-            "msg": "HTTP request failed without exception and without response",
-            "status_code": None,
-            "headers": {},
-            "data": None,
-            "url": full_url,
-            "method": method.upper(),
-            "attempts": attempts,
-        }
+            return err(
+                str(last_exc),
+                status_code=getattr(last_exc, "status", None),
+                headers={},
+                data=None,
+                url=full_url,
+                method=method.upper(),
+                attempts=attempts,
+            )
+        return err(
+            "HTTP request failed without exception and without response",
+            status_code=None,
+            headers={},
+            data=None,
+            url=full_url,
+            method=method.upper(),
+            attempts=attempts,
+        )
 
     def _compose_url(self, url: str) -> str:
         if self._base_url and not url.lower().startswith(("http://", "https://")):
@@ -476,18 +472,17 @@ class InoHttpHelper:
         tmp = dest.with_suffix(dest.suffix + temp_suffix)
 
         if dest.exists() and not overwrite:
-            return {
-                "success": False,
-                "msg": f"Destination exists and overwrite=False: {dest}",
-                "status_code": None,
-                "headers": {},
-                "path": "",
-                "bytes": "",
-                "filename": "",
-                "url": full_url,
-                "method": "GET",
-                "attempts": 0,
-            }
+            return err(
+                f"Destination exists and overwrite=False: {dest}",
+                status_code=None,
+                headers={},
+                path="",
+                bytes="",
+                filename="",
+                url=full_url,
+                method="GET",
+                attempts=0,
+            )
 
         attempts = self._retries + 1
         last_exc: Optional[BaseException] = None
@@ -580,18 +575,17 @@ class InoHttpHelper:
                         if derived and derived != dest.name:
                             candidate = base_dir / derived
                             if candidate.exists() and not overwrite:
-                                return {
-                                    "success": False,
-                                    "msg": f"Destination exists and overwrite=False: {candidate}",
-                                    "status_code": None,
-                                    "headers": {},
-                                    "path": "",
-                                    "bytes": "",
-                                    "filename": "",
-                                    "url": full_url,
-                                    "method": "GET",
-                                    "attempts": attempt,
-                                }
+                                return err(
+                                    f"Destination exists and overwrite=False: {candidate}",
+                                    status_code=None,
+                                    headers={},
+                                    path="",
+                                    bytes="",
+                                    filename="",
+                                    url=full_url,
+                                    method="GET",
+                                    attempts=attempt,
+                                )
                             # do not change tmp to preserve resume continuity; only change final dest
                             dest = candidate
 
@@ -636,102 +630,96 @@ class InoHttpHelper:
                         os.replace(tmp, dest)
 
                     headers_out = {k: v for k, v in resp.headers.items()}
-                    return {
-                        "success": True,
-                        "msg": resp.reason or "",
-                        "status_code": status,
-                        "headers": headers_out,
-                        "path": str(dest),
-                        "bytes": bytes_downloaded,
-                        "filename": Path(dest).name,
-                        "url": full_url,
-                        "method": "GET",
-                        "attempts": attempt,
-                    }
+                    return ok(
+                        resp.reason or "",
+                        status_code=status,
+                        headers=headers_out,
+                        path=str(dest),
+                        bytes=bytes_downloaded,
+                        filename=Path(dest).name,
+                        url=full_url,
+                        method="GET",
+                        attempts=attempt,
+                    )
 
             except aiohttp.ClientResponseError as cre:
                 last_exc = cre
                 if getattr(cre, "status", None) in self._retry_for_statuses and attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return {
-                    "success": False,
-                    "msg": str(cre),
-                    "status_code": getattr(cre, "status", None),
-                    "headers": {},
-                    "path": "",
-                    "bytes": "",
-                    "filename": "",
-                    "url": full_url,
-                    "method": "GET",
-                    "attempts": attempt,
-                }
+                return err(
+                    str(cre),
+                    status_code=getattr(cre, "status", None),
+                    headers={},
+                    path="",
+                    bytes="",
+                    filename="",
+                    url=full_url,
+                    method="GET",
+                    attempts=attempt,
+                )
             except (aiohttp.ClientConnectionError, aiohttp.ServerTimeoutError, aiohttp.ClientOSError, aiohttp.TooManyRedirects) as ce:
                 last_exc = ce
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return {
-                    "success": False,
-                    "msg": str(ce),
-                    "status_code": None,
-                    "headers": {},
-                    "path": "",
-                    "bytes": "",
-                    "filename": "",
-                    "url": full_url,
-                    "method": "GET",
-                    "attempts": attempt,
-                }
+                return err(
+                    str(ce),
+                    status_code=None,
+                    headers={},
+                    path="",
+                    bytes="",
+                    filename="",
+                    url=full_url,
+                    method="GET",
+                    attempts=attempt,
+                )
             except asyncio.TimeoutError as te:
                 last_exc = te
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return {
-                    "success": False,
-                    "msg": "Request timed out: " + str(te),
-                    "status_code": None,
-                    "headers": {},
-                    "path": "",
-                    "bytes": "",
-                    "filename": "",
-                    "url": full_url,
-                    "method": "GET",
-                    "attempts": attempt,
-                }
+                return err(
+                    "Request timed out: " + str(te),
+                    status_code=None,
+                    headers={},
+                    path="",
+                    bytes="",
+                    filename="",
+                    url=full_url,
+                    method="GET",
+                    attempts=attempt,
+                )
             except Exception as e:
                 # For IO errors or size mismatch etc., retry if possible
                 last_exc = e
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return {
-                    "success": False,
-                    "msg": str(e),
-                    "status_code": None,
-                    "headers": {},
-                    "path": "",
-                    "bytes": "",
-                    "filename": "",
-                    "url": full_url,
-                    "method": "GET",
-                    "attempts": attempt,
-                }
+                return err(
+                    str(e),
+                    status_code=None,
+                    headers={},
+                    path="",
+                    bytes="",
+                    filename="",
+                    url=full_url,
+                    method="GET",
+                    attempts=attempt,
+                )
 
         # If all attempts failed
-        return {
-            "success": False,
-            "msg": str(last_exc) if last_exc else "Download failed",
-            "status_code": getattr(last_exc, "status", None) if last_exc else None,
-            "headers": {},
-            "path": "",
-            "bytes": "",
-            "filename": "",
-            "url": full_url,
-            "method": "GET",
-            "attempts": attempts,
-        }
+        return err(
+            str(last_exc) if last_exc else "Download failed",
+            status_code=getattr(last_exc, "status", None) if last_exc else None,
+            headers={},
+            path="",
+            bytes="",
+            filename="",
+            url=full_url,
+            method="GET",
+            attempts=attempts,
+        )
 
     async def _sleep_backoff(self, attempt: int) -> None:
         delay = self._backoff_factor * (2 ** (attempt - 1))
