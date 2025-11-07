@@ -1,0 +1,436 @@
+"""
+Async MongoDB helper for FastAPI-style projects.
+
+Design goals
+- Lazy optional dependency: importing this module must NOT require motor or pymongo.
+- Single reusable instance: initialize once on app startup, import and use everywhere.
+- Fully typed public API (without importing motor at runtime) with helpful docstrings.
+- Thin wrappers around common MongoDB operations that return plain dicts and str IDs.
+
+Example (FastAPI)
+
+    from fastapi import FastAPI
+    from inopyutils.mongo_helper import mongo
+
+    app = FastAPI()
+
+    @app.on_event("startup")
+    async def on_startup() -> None:
+        await mongo.connect(
+            uri="mongodb://localhost:27017",
+            db_name="mydb",
+            serverSelectionTimeoutMS=5_000,
+        )
+
+    @app.on_event("shutdown")
+    async def on_shutdown() -> None:
+        await mongo.close()
+
+    # Usage in routes or services
+    # document = await mongo.find_one("users", {"_id": user_id})
+
+Notes
+- Methods raise NotInitializedError if used before connect().
+- motor (async driver) is only imported inside methods that need it.
+- By default, ObjectId values are converted to str in returned documents.
+"""
+from __future__ import annotations
+
+from typing import (
+    Any,
+    AsyncIterator,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TYPE_CHECKING,
+    Union,
+    Literal,
+)
+import asyncio
+
+# Type aliases that do not require motor at runtime
+Document = Dict[str, Any]
+Filter = Mapping[str, Any]
+Projection = Optional[Mapping[str, Union[int, bool]]]
+SortDirection = Literal[1, -1]
+Sort = Sequence[Tuple[str, SortDirection]]
+Pipeline = Sequence[Mapping[str, Any]]
+
+
+
+class NotInitializedError(RuntimeError):
+    """Raised when MongoHelper is used before connect()."""
+
+
+class MongoHelper:
+    """Async MongoDB helper wrapping motor for common operations.
+
+    This helper hides low-level driver details and exposes a simple, typed API.
+    It is safe to import anywhere and initialize once at application startup.
+
+    ObjectId handling
+    - By default, returned documents convert the top-level `_id` field to str.
+    - Filters that contain `_id` as str are automatically converted to ObjectId.
+    - You can override conversion per-call using `convert_id_to_str`.
+    """
+
+    def __init__(self, *, convert_id_to_str: bool = True) -> None:
+        self._client: Optional["_AsyncIOMotorClient"] = None
+        self._db: Optional["_AsyncIOMotorDatabase"] = None
+        self._db_name: Optional[str] = None
+        self._uri: Optional[str] = None
+        self._convert_id_to_str_default: bool = convert_id_to_str
+        self._lock = asyncio.Lock()
+
+    # ------------------------------
+    # Connection management
+    # ------------------------------
+    @property
+    def is_connected(self) -> bool:
+        return self._db is not None and self._client is not None
+
+    @property
+    def db_name(self) -> Optional[str]:
+        return self._db_name
+
+    async def connect(
+        self,
+        *,
+        uri: str,
+        db_name: str,
+        appname: Optional[str] = None,
+        convert_id_to_str: Optional[bool] = None,
+        **client_kwargs: Any,
+    ) -> None:
+        """Create and validate a single shared AsyncIOMotorClient and database.
+
+        Parameters
+        - uri: MongoDB connection string
+        - db_name: default database name to use
+        - appname: optional appname for MongoDB monitoring/diagnostics
+        - convert_id_to_str: override instance-wide default for id conversion
+        - client_kwargs: passed directly to AsyncIOMotorClient (timeouts, SSL, etc.)
+
+        This method is safe to call multiple times; duplicate calls are no-ops
+        if already connected with the same parameters.
+        """
+        if convert_id_to_str is not None:
+            self._convert_id_to_str_default = convert_id_to_str
+
+        async with self._lock:
+            if self.is_connected:
+                # If already connected to the same target, just return
+                if self._uri == uri and self._db_name == db_name:
+                    return
+                # Otherwise close the existing connection before re-connecting
+                await self.close()
+
+            try:  # Lazy import to keep dependency optional at import time
+                import motor.motor_asyncio as motor
+            except Exception as e:  # pragma: no cover - environment dependent
+                raise RuntimeError(
+                    "motor is required to use MongoHelper.connect(). Install with 'pip install motor'."
+                ) from e
+
+            if appname and "appname" not in client_kwargs:
+                client_kwargs["appname"] = appname
+
+            # Reasonable default to fail fast in startup if server is unreachable
+            client_kwargs.setdefault("serverSelectionTimeoutMS", 5_000)
+
+            client = motor.AsyncIOMotorClient(uri, **client_kwargs)
+            db = client[db_name]
+
+            # Validate connection (forces server selection on startup)
+            try:
+                await db.command("ping")
+            except Exception:
+                # Close the client on failure to avoid leaking sockets
+                try:
+                    client.close()
+                finally:
+                    pass
+                raise
+
+            self._client = client
+            self._db = db
+            self._uri = uri
+            self._db_name = db_name
+
+    async def close(self) -> None:
+        """Close the underlying AsyncIOMotorClient, if any."""
+        async with self._lock:
+            if self._client is not None:
+                # motor's close() is sync and immediate
+                self._client.close()
+            self._client = None
+            self._db = None
+            self._uri = None
+            self._db_name = None
+
+    async def ping(self) -> bool:
+        """Return True if the database responds to ping, False otherwise."""
+        db = self._require_db()
+        try:
+            await db.command("ping")
+            return True
+        except Exception:
+            return False
+
+    # ------------------------------
+    # Core operations
+    # ------------------------------
+    def _require_db(self) -> "_AsyncIOMotorDatabase":
+        if self._db is None:
+            raise NotInitializedError(
+                "MongoHelper is not initialized. Call await mongo.connect(...) during app startup."
+            )
+        return self._db
+
+    def _collection(self, name: str) -> "_AsyncIOMotorCollection":
+        return self._require_db()[name]
+
+    @staticmethod
+    def _try_import_objectid() -> Any:
+        try:
+            from bson import ObjectId  # type: ignore
+        except Exception as e:  # pragma: no cover - environment dependent
+            raise RuntimeError(
+                "bson (from pymongo) is required at runtime for ObjectId operations. Install with 'pip install pymongo'."
+            ) from e
+        return ObjectId
+
+    def _to_object_id(self, value: Any) -> Any:
+        ObjectId = self._try_import_objectid()
+        if isinstance(value, ObjectId):
+            return value
+        if isinstance(value, str):
+            try:
+                return ObjectId(value)
+            except Exception:
+                return value
+        return value
+
+    def _normalize_filter(self, flt: Optional[Filter]) -> Dict[str, Any]:
+        if not flt:
+            return {}
+        # Copy and normalize `_id`
+        out: Dict[str, Any] = dict(flt)
+        if "_id" in out:
+            out_id = out["_id"]
+            if isinstance(out_id, (str, bytes)) or (hasattr(out_id, "__iter__") and not isinstance(out_id, (dict,))):
+                # Handle both scalar and list of IDs
+                if isinstance(out_id, (list, tuple, set)):
+                    out["_id"] = [self._to_object_id(v) for v in out_id]  # type: ignore[assignment]
+                else:
+                    out["_id"] = self._to_object_id(out_id)
+        return out
+
+    def _convert_id(self, doc: Optional[Mapping[str, Any]], *, convert_id_to_str: bool) -> Optional[Document]:
+        if doc is None:
+            return None
+        d: Document = dict(doc)
+        if convert_id_to_str and "_id" in d:
+            try:
+                ObjectId = self._try_import_objectid()
+                if isinstance(d["_id"], ObjectId):
+                    d["_id"] = str(d["_id"])  # type: ignore[assignment]
+            except Exception:
+                # If bson is not available at runtime we simply leave _id as-is
+                pass
+        return d
+
+    # ---- find ----
+    async def find_one(
+        self,
+        collection: str,
+        flt: Optional[Filter] = None,
+        *,
+        projection: Projection = None,
+        convert_id_to_str: Optional[bool] = None,
+    ) -> Optional[Document]:
+        coll = self._collection(collection)
+        flt_n = self._normalize_filter(flt)
+        doc = await coll.find_one(flt_n, projection)  # type: ignore[arg-type]
+        return self._convert_id(doc, convert_id_to_str=convert_id_to_str if convert_id_to_str is not None else self._convert_id_to_str_default)
+
+    async def find_many(
+        self,
+        collection: str,
+        flt: Optional[Filter] = None,
+        *,
+        projection: Projection = None,
+        sort: Optional[Sort] = None,
+        skip: int = 0,
+        limit: int = 0,
+        convert_id_to_str: Optional[bool] = None,
+    ) -> List[Document]:
+        coll = self._collection(collection)
+        flt_n = self._normalize_filter(flt)
+        cursor = coll.find(flt_n, projection)  # type: ignore[arg-type]
+        if sort:
+            cursor = cursor.sort(list(sort))
+        if skip:
+            cursor = cursor.skip(skip)
+        if limit:
+            cursor = cursor.limit(limit)
+        result: List[Document] = []
+        do_convert = convert_id_to_str if convert_id_to_str is not None else self._convert_id_to_str_default
+        async for doc in cursor:
+            result.append(self._convert_id(doc, convert_id_to_str=do_convert) or {})
+        return result
+
+    async def iter_many(
+        self,
+        collection: str,
+        flt: Optional[Filter] = None,
+        *,
+        projection: Projection = None,
+        sort: Optional[Sort] = None,
+        skip: int = 0,
+        limit: int = 0,
+        convert_id_to_str: Optional[bool] = None,
+    ) -> AsyncIterator[Document]:
+        coll = self._collection(collection)
+        flt_n = self._normalize_filter(flt)
+        cursor = coll.find(flt_n, projection)  # type: ignore[arg-type]
+        if sort:
+            cursor = cursor.sort(list(sort))
+        if skip:
+            cursor = cursor.skip(skip)
+        if limit:
+            cursor = cursor.limit(limit)
+        do_convert = convert_id_to_str if convert_id_to_str is not None else self._convert_id_to_str_default
+        async for doc in cursor:
+            yield self._convert_id(doc, convert_id_to_str=do_convert) or {}
+
+    # ---- insert ----
+    async def insert_one(self, collection: str, document: Mapping[str, Any]) -> str:
+        """Insert a document and return the inserted id as str."""
+        coll = self._collection(collection)
+        doc = dict(document)
+        result = await coll.insert_one(doc)  # type: ignore[no-any-return]
+        inserted_id = getattr(result, "inserted_id", None)
+        return str(inserted_id)
+
+    async def insert_many(self, collection: str, documents: Iterable[Mapping[str, Any]]) -> List[str]:
+        coll = self._collection(collection)
+        docs = [dict(d) for d in documents]
+        result = await coll.insert_many(docs)
+        ids = getattr(result, "inserted_ids", [])
+        return [str(_id) for _id in ids]
+
+    # ---- update/replace ----
+    async def update_one(
+        self,
+        collection: str,
+        flt: Filter,
+        update: Mapping[str, Any],
+        *,
+        upsert: bool = False,
+    ) -> Dict[str, Any]:
+        coll = self._collection(collection)
+        flt_n = self._normalize_filter(flt)
+        result = await coll.update_one(flt_n, dict(update), upsert=upsert)
+        return {
+            "matched_count": getattr(result, "matched_count", 0),
+            "modified_count": getattr(result, "modified_count", 0),
+            "upserted_id": (str(result.upserted_id) if getattr(result, "upserted_id", None) is not None else None),
+        }
+
+    async def update_many(
+        self,
+        collection: str,
+        flt: Filter,
+        update: Mapping[str, Any],
+        *,
+        upsert: bool = False,
+    ) -> Dict[str, Any]:
+        coll = self._collection(collection)
+        flt_n = self._normalize_filter(flt)
+        result = await coll.update_many(flt_n, dict(update), upsert=upsert)
+        return {
+            "matched_count": getattr(result, "matched_count", 0),
+            "modified_count": getattr(result, "modified_count", 0),
+            "upserted_id": (str(result.upserted_id) if getattr(result, "upserted_id", None) is not None else None),
+        }
+
+    async def replace_one(
+        self,
+        collection: str,
+        flt: Filter,
+        replacement: Mapping[str, Any],
+        *,
+        upsert: bool = False,
+    ) -> Dict[str, Any]:
+        coll = self._collection(collection)
+        flt_n = self._normalize_filter(flt)
+        result = await coll.replace_one(flt_n, dict(replacement), upsert=upsert)
+        return {
+            "matched_count": getattr(result, "matched_count", 0),
+            "modified_count": getattr(result, "modified_count", 0),
+            "upserted_id": (str(result.upserted_id) if getattr(result, "upserted_id", None) is not None else None),
+        }
+
+    # ---- delete ----
+    async def delete_one(self, collection: str, flt: Filter) -> int:
+        coll = self._collection(collection)
+        flt_n = self._normalize_filter(flt)
+        result = await coll.delete_one(flt_n)
+        return getattr(result, "deleted_count", 0)
+
+    async def delete_many(self, collection: str, flt: Filter) -> int:
+        coll = self._collection(collection)
+        flt_n = self._normalize_filter(flt)
+        result = await coll.delete_many(flt_n)
+        return getattr(result, "deleted_count", 0)
+
+    # ---- aggregate / count / indexes ----
+    async def aggregate(
+        self,
+        collection: str,
+        pipeline: Pipeline,
+        *,
+        convert_id_to_str: Optional[bool] = None,
+    ) -> List[Document]:
+        coll = self._collection(collection)
+        cursor = coll.aggregate(list(pipeline))
+        result: List[Document] = []
+        do_convert = convert_id_to_str if convert_id_to_str is not None else self._convert_id_to_str_default
+        async for doc in cursor:
+            result.append(self._convert_id(doc, convert_id_to_str=do_convert) or {})
+        return result
+
+    async def count_documents(self, collection: str, flt: Optional[Filter] = None) -> int:
+        coll = self._collection(collection)
+        flt_n = self._normalize_filter(flt)
+        return await coll.count_documents(flt_n)
+
+    async def create_index(
+        self, collection: str, keys: Sequence[Tuple[str, SortDirection]], *, unique: bool = False, **kwargs: Any
+    ) -> str:
+        coll = self._collection(collection)
+        return await coll.create_index(list(keys), unique=unique, **kwargs)
+
+    # ------------------------------
+    # Context manager helpers
+    # ------------------------------
+    async def __aenter__(self) -> "MongoHelper":
+        if not self.is_connected:
+            raise NotInitializedError("Call connect() before using MongoHelper as a context manager.")
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:  # type: ignore[override]
+        await self.close()
+
+
+# Reusable module-level instance to import across the app
+mongo = MongoHelper()
+
+# Backward-compatible alias if some code used the previous class name
+MongoClient = MongoHelper
