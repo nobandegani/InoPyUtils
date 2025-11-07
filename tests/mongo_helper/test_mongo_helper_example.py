@@ -31,7 +31,9 @@ async def main() -> None:
         return
 
     # Lazy import to avoid requiring motor/pymongo at import time of this file
-    from src.inopyutils.mongo_helper import mongo
+    from src.inopyutils.mongo_helper import InoMongoHelper
+
+    mongo = InoMongoHelper()
 
     uri = os.environ.get("MONGO_URI")
     db_name = os.environ.get("MONGO_DB", "inopyutils_demo")

@@ -72,7 +72,7 @@ class NotInitializedError(RuntimeError):
     """Raised when MongoHelper is used before connect()."""
 
 
-class MongoHelper:
+class InoMongoHelper:
     """Async MongoDB helper wrapping motor for common operations.
 
     This helper hides low-level driver details and exposes a simple, typed API.
@@ -635,17 +635,10 @@ class MongoHelper:
     # ------------------------------
     # Context manager helpers
     # ------------------------------
-    async def __aenter__(self) -> "MongoHelper":
+    async def __aenter__(self) -> "InoMongoHelper":
         if not self.is_connected:
             raise NotInitializedError("Call connect() before using MongoHelper as a context manager.")
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:  # type: ignore[override]
         await self.close()
-
-
-# Reusable module-level instance to import across the app
-mongo = MongoHelper()
-
-# Backward-compatible alias if some code used the previous class name
-MongoClient = MongoHelper

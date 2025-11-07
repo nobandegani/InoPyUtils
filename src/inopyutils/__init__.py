@@ -7,6 +7,7 @@ from .json_helper import InoJsonHelper
 from .http_helper import InoHttpHelper
 from .audio_helper import InoAudioHelper
 from .util_helper import InoUtilHelper
+from .mongo_helper import InoMongoHelper
 
 __all__ = [
     "InoConfigHelper",
@@ -19,4 +20,5 @@ __all__ = [
     "InoHttpHelper",
     "InoAudioHelper",
     "InoUtilHelper",
+    "InoMongoHelper"
 ]
