@@ -20,6 +20,9 @@ Example (FastAPI)
             uri="mongodb://localhost:27017",
             db_name="mydb",
             serverSelectionTimeoutMS=5_000,
+            check_connection=True,           # ping on startup (default True)
+            ensure_db_exists=True,           # materialize DB if empty (optional)
+            ensure_collection_name="_meta", # name of tiny collection used to materialize
         )
 
     @app.on_event("shutdown")
@@ -52,6 +55,7 @@ from typing import (
     Literal,
 )
 import asyncio
+from datetime import datetime, timezone
 
 # Type aliases that do not require motor at runtime
 Document = Dict[str, Any]
@@ -105,15 +109,21 @@ class MongoHelper:
         db_name: str,
         appname: Optional[str] = None,
         convert_id_to_str: Optional[bool] = None,
+        check_connection: bool = True,
+        ensure_db_exists: bool = False,
+        ensure_collection_name: Optional[str] = None,
         **client_kwargs: Any,
     ) -> None:
-        """Create and validate a single shared AsyncIOMotorClient and database.
+        """Create and (optionally) validate a single shared AsyncIOMotorClient and database.
 
         Parameters
         - uri: MongoDB connection string
         - db_name: default database name to use
         - appname: optional appname for MongoDB monitoring/diagnostics
         - convert_id_to_str: override instance-wide default for id conversion
+        - check_connection: if True (default), ping the DB on connect to fail fast
+        - ensure_db_exists: if True, materialize the database if empty by creating a small collection
+        - ensure_collection_name: name of the collection to create when materializing the DB (default: "_meta")
         - client_kwargs: passed directly to AsyncIOMotorClient (timeouts, SSL, etc.)
 
         This method is safe to call multiple times; duplicate calls are no-ops
@@ -146,21 +156,64 @@ class MongoHelper:
             client = motor.AsyncIOMotorClient(uri, **client_kwargs)
             db = client[db_name]
 
-            # Validate connection (forces server selection on startup)
-            try:
-                await db.command("ping")
-            except Exception:
-                # Close the client on failure to avoid leaking sockets
+            # Optionally validate connection (forces server selection on startup)
+            if check_connection:
                 try:
-                    client.close()
-                finally:
-                    pass
-                raise
+                    await db.command("ping")
+                except Exception:
+                    # Close the client on failure to avoid leaking sockets
+                    try:
+                        client.close()
+                    finally:
+                        pass
+                    raise
+
+            # Optionally ensure DB exists/materialized
+            if ensure_db_exists:
+                await self._ensure_db_exists(db, ensure_collection_name)
 
             self._client = client
             self._db = db
             self._uri = uri
             self._db_name = db_name
+
+    async def _ensure_db_exists(self, db: Any, ensure_collection_name: Optional[str]) -> None:
+        """Ensure the database is materialized.
+
+        MongoDB creates a database lazily on first write. If the database has
+        no collections yet, optionally create a tiny metadata collection to
+        materialize it so subsequent operations (like listing or indexing)
+        work consistently.
+        """
+        try:
+            names = await db.list_collection_names()
+        except Exception:
+            # If the server doesn't support listing or call fails, attempt to
+            # materialize anyway and let errors bubble up to caller on failure.
+            names = []
+
+        if names:
+            return
+
+        coll_name = ensure_collection_name or "_meta"
+        try:
+            # Create the collection if it doesn't exist (idempotent enough for our purpose)
+            await db.create_collection(coll_name)
+        except Exception:
+            # Ignore if someone else created it concurrently
+            pass
+
+        coll = db[coll_name]
+        # Upsert a lightweight sentinel document
+        try:
+            await coll.update_one(
+                {"_id": "db_meta"},
+                {"$setOnInsert": {"createdAt": datetime.now(timezone.utc).isoformat()}},
+                upsert=True,
+            )
+        except Exception:
+            # Ignore sentinel failure; DB may still be created
+            pass
 
     async def close(self) -> None:
         """Close the underlying AsyncIOMotorClient, if any."""
@@ -308,6 +361,77 @@ class MongoHelper:
         do_convert = convert_id_to_str if convert_id_to_str is not None else self._convert_id_to_str_default
         async for doc in cursor:
             yield self._convert_id(doc, convert_id_to_str=do_convert) or {}
+
+    # ------------------------------
+    # Convenience alias helpers
+    # ------------------------------
+    async def get_by_id(
+        self,
+        collection: str,
+        _id: Any,
+        *,
+        projection: Projection = None,
+        convert_id_to_str: Optional[bool] = None,
+    ) -> Optional[Document]:
+        """Get a single document by its `_id`.
+
+        This is a convenience wrapper over `find_one` that accepts string IDs.
+        """
+        return await self.find_one(
+            collection,
+            {"_id": _id},
+            projection=projection,
+            convert_id_to_str=convert_id_to_str,
+        )
+
+    async def get_one(
+        self,
+        collection: str,
+        flt: Optional[Filter] = None,
+        *,
+        projection: Projection = None,
+        convert_id_to_str: Optional[bool] = None,
+    ) -> Optional[Document]:
+        """Get a single document matching the query (alias to `find_one`)."""
+        return await self.find_one(
+            collection,
+            flt,
+            projection=projection,
+            convert_id_to_str=convert_id_to_str,
+        )
+
+    async def get_many(
+        self,
+        collection: str,
+        flt: Optional[Filter] = None,
+        *,
+        projection: Projection = None,
+        sort: Optional[Sort] = None,
+        skip: int = 0,
+        limit: int = 0,
+        convert_id_to_str: Optional[bool] = None,
+    ) -> List[Document]:
+        """Get multiple documents matching the query (alias to `find_many`)."""
+        return await self.find_many(
+            collection,
+            flt,
+            projection=projection,
+            sort=sort,
+            skip=skip,
+            limit=limit,
+            convert_id_to_str=convert_id_to_str,
+        )
+
+    async def update_by_id(
+        self,
+        collection: str,
+        _id: Any,
+        update: Mapping[str, Any],
+        *,
+        upsert: bool = False,
+    ) -> Dict[str, Any]:
+        """Update a single document by its `_id` (wrapper over `update_one`)."""
+        return await self.update_one(collection, {"_id": _id}, update, upsert=upsert)
 
     # ---- insert ----
     async def insert_one(self, collection: str, document: Mapping[str, Any]) -> str:
