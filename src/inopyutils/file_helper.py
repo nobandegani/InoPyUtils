@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 import aiofiles
 from .media_helper import InoMediaHelper
-from .util_helper import is_err
+from .util_helper import ino_is_err, ino_err, ino_ok
 
 class InoFileHelper:
     @staticmethod
@@ -29,36 +29,18 @@ class InoFileHelper:
     def get_last_file(path: Path) -> dict:
         """
         Return the most recently modified file in `path`.
-        Returns:
-            {
-              "success": bool,
-              "file": str,      # full path to the file (when success=True)
-              "modified": float,# timestamp of last modification
-              "msg": str
-            }
         """
         if not path.exists() or not path.is_dir():
-            return {
-                "success": False,
-                "msg": f"❌ Path not found or not a directory: {path}"
-            }
+            return ino_err(f"❌ Path not found or not a directory: {path}")
 
         files = [p for p in path.iterdir() if p.is_file()]
         if not files:
-            return {
-                "success": False,
-                "msg": f"❌ No files found in directory: {path}"
-            }
+            return ino_err(f"❌ No files found in directory: {path}")
 
         last_file = max(files, key=lambda p: p.stat().st_mtime)
         mtime = last_file.stat().st_mtime
 
-        return {
-            "success": True,
-            "file": last_file,
-            "modified": mtime,
-            "msg": f"✅ Last file is '{last_file.name}' (modified {mtime})"
-        }
+        return ino_ok(f"✅ Last file is '{last_file.name}' (modified {mtime})", file=last_file, modified=mtime)
 
     @staticmethod
     async def zip(
@@ -80,18 +62,10 @@ class InoFileHelper:
                     compression_level: integer 0–9 for zlib compression level, or 5 for default.
                     include_root: if True and `to_zip` is a directory, include the top-level
                                   folder in the archive; if False, only include its contents.
-
-                Returns:
-                    {
-                      "success": bool,
-                      "msg": str,
-                      "original_size": int,     # bytes before compression
-                      "zipped_size": int        # bytes after compression
-                    }
         """
 
         if not to_zip.exists():
-            return {"success": False, "msg": f"❌ Path not found: {to_zip}"}
+            return ino_err(f"❌ Path not found: {to_zip}")
 
         path_to_save.mkdir(parents=True, exist_ok=True)
         out_path = path_to_save / zip_file_name
@@ -115,40 +89,20 @@ class InoFileHelper:
         try:
             original_size = await asyncio.to_thread(_do_zip)
             zipped_size = out_path.stat().st_size
-            return {
-                "success": True,
-                "msg": (
-                    f"✅ Zipped '{to_zip.name}' to '{out_path}': "
-                    f"{original_size} → {zipped_size} bytes"
-                ),
-                "original_size": original_size,
-                "zipped_size": zipped_size,
-            }
+            return ino_ok( f"✅ Zipped '{to_zip.name}' to '{out_path}': "f"{original_size} → {zipped_size} bytes", original_size=original_size, zipped_size=zipped_size)
         except RuntimeError as re:
-            return {
-                "success": False,
-                "msg": f"❌ Error zipping '{to_zip}': {re}"
-            }
+            return ino_err(f"❌ Error zipping '{to_zip}': {re}")
         except Exception as e:
-            return {
-                "success": False,
-                "msg": f"❌ Error zipping '{to_zip}': {e}"
-            }
+            return ino_err(f"❌ Error zipping '{to_zip}': {e}")
 
     @staticmethod
     async def unzip(zip_path: Path, output_path: Path) -> dict:
         output_path.mkdir(parents=True, exist_ok=True)
         if not zip_path.is_file():
-            return {
-                "success": False,
-                "msg": f"{zip_path.name} is not a file"
-            }
+            return ino_err(f"{zip_path.name} is not a file")
 
         if not zip_path.suffix == ".zip":
-            return {
-                "success": False,
-                "msg": f"{zip_path.name} is not a zip file"
-            }
+            return ino_err(f"{zip_path.name} is not a zip file")
 
         def _extract():
             with zipfile.ZipFile(zip_path, "r") as zf:
@@ -158,80 +112,43 @@ class InoFileHelper:
             await asyncio.to_thread(_extract)
             extracted_files = list(output_path.rglob("*"))
             if not extracted_files:
-                return {
-                    "success": False,
-                    "msg": f"No files found after extracting {zip_path.name}"
-                }
-            return {
-                "success": True,
-                "output_path": str(output_path),
-                "files_extracted": len(extracted_files)
-            }
+                return ino_err(f"No files found after extracting {zip_path.name}")
+            return ino_ok(output_path=str(output_path), files_extracte = len(extracted_files))
 
         except zipfile.BadZipFile:
-            return {
-                "success": False,
-                "msg": f"{zip_path.name} is not a valid zip file"
-            }
+            return ino_err(f"{zip_path.name} is not a valid zip file")
         except Exception as e:
-            return {
-                "success": False,
-                "msg": f"Error extracting {zip_path.name}: {e}"
-            }
+            return ino_err(f"Error extracting {zip_path.name}: {e}")
 
     @staticmethod
     async def remove_file(file_path: Path) -> dict:
         if not file_path.exists():
-            return {
-                "success": False,
-                "msg": f"{file_path.name} not exist"
-            }
+            return ino_err(f"{file_path.name} not exist")
 
         if not file_path.is_file():
-            return {
-                "success": False,
-                "msg": f"{file_path.name} is not a file"
-            }
+            return ino_err(f"{file_path.name} is not a file")
 
         try:
             await asyncio.to_thread(file_path.unlink)
         except Exception as e:
-            return {
-                "success": False,
-                "msg": f"⚠️ Failed to delete {file_path}: {e}"
-            }
+            return ino_err(f"⚠️ Failed to delete {file_path}: {e}")
 
-        return {
-            "success": True,
-            "msg": f"File {file_path.name} deleted"
-        }
+        return ino_ok(f"File {file_path.name} deleted")
 
     @staticmethod
     async def remove_folder(folder_path: Path) -> dict:
         if not folder_path.exists():
-            return {
-                "success": False,
-                "msg": f"{folder_path.name} not exist"
-            }
+            return ino_err(f"{folder_path.name} not exist")
 
         if not folder_path.is_dir():
-            return {
-                "success": False,
-                "msg": f"{folder_path.name} is not a directory"
-            }
+            return ino_err(f"{folder_path.name} is not a directory")
 
         try:
             await asyncio.to_thread(shutil.rmtree, folder_path)
         except Exception as e:
-            return {
-                "success": False,
-                "msg": f"⚠️ Failed to delete {folder_path}: {e}"
-            }
+            return ino_err(f"⚠️ Failed to delete {folder_path}: {e}")
 
-        return {
-            "success": True,
-            "msg": f"File {folder_path.name} deleted"
-        }
+        return ino_ok(f"File {folder_path.name} deleted")
 
     @staticmethod
     async def move_path(
@@ -248,7 +165,7 @@ class InoFileHelper:
         """
         try:
             if not from_path.exists():
-                return {"success": False, "msg": f"Source not found: {from_path}"}
+                return ino_err(f"Source not found: {from_path}")
 
             to_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -257,7 +174,7 @@ class InoFileHelper:
                     pass
                 else:
                     if not overwrite:
-                        return {"success": False, "msg": f"Destination exists: {to_path}"}
+                        return ino_err(f"Destination exists: {to_path}")
                     to_path.unlink()
 
             await asyncio.to_thread(
@@ -266,13 +183,10 @@ class InoFileHelper:
                 str(to_path.resolve()),
             )
 
-            return {
-                "success": True,
-                "msg": f"Moved '{from_path}' → '{to_path}'"
-            }
+            return ino_ok(f"Moved '{from_path}' → '{to_path}'")
 
         except Exception as e:
-            return {"success": False, "msg": f"⚠️ Failed to move '{from_path}' → '{to_path}': {e}"}
+            return ino_err(f"⚠️ Failed to move '{from_path}' → '{to_path}': {e}")
 
     @staticmethod
     async def count_files(path: Path, recursive: bool = False) -> dict:
@@ -280,11 +194,7 @@ class InoFileHelper:
         Count files in `path`. If `recursive=True`, include subfolders.
         """
         if not path.exists() or not path.is_dir():
-            return {
-                "success": False,
-                "msg": f"{path.name} not exist",
-                "count": -1
-            }
+            return ino_err(f"{path.name} not exist", count=-1)
 
         def _count_nonrec() -> int:
             return sum(1 for p in path.iterdir() if p.is_file())
@@ -296,9 +206,7 @@ class InoFileHelper:
             return total
 
         count = await asyncio.to_thread(_count_rec if recursive else _count_nonrec)
-
-        return {"success": True, "msg": "Counting files successful", "count": count}
-
+        return ino_ok(f"Counting files successful", count=count)
 
     @staticmethod
     async def copy_files(
@@ -354,15 +262,9 @@ class InoFileHelper:
                 log.write("\n".join(log_lines))
 
         if error:
-            return {
-                "success": False,
-                "msg": f"Failed to copy files, see log file: {log_file}"
-            }
+            return ino_err(f"Failed to copy files, see log file: {log_file}")
 
-        return {
-            "success": True,
-            "msg": f"📂 Coping and renaming files completed"
-        }
+        return ino_ok(f"📂 Coping and renaming files completed")
 
     @staticmethod
     async def validate_files(
@@ -376,7 +278,7 @@ class InoFileHelper:
 
     ) -> dict:
         if not input_path.exists() or not input_path.is_dir():
-            return {"success": False, "msg": f"{input_path!s} is not a directory"}
+            return ino_err(f"{input_path!s} is not a directory")
 
         image_valid_exts = image_valid_exts or [".jpg"]
         image_convert_exts = image_convert_exts or [".webp", ".tiff", ".bmp", ".heic", ".png", ".jpeg"]
@@ -393,7 +295,7 @@ class InoFileHelper:
 
             if include_image and ext in image_valid_exts:
                 image_validate = await InoMediaHelper.image_validate_pillow(file, file)
-                if is_err(image_validate):
+                if ino_is_err(image_validate):
                     return image_validate
 
                 log_lines.append(
@@ -403,7 +305,7 @@ class InoFileHelper:
             elif include_image and ext in image_convert_exts:
                 new_file = file.with_suffix('.jpg')
                 image_validate = await InoMediaHelper.image_validate_pillow(file, new_file)
-                if is_err(image_validate):
+                if ino_is_err(image_validate):
                     return image_validate
 
                 log_lines.append(
@@ -436,7 +338,7 @@ class InoFileHelper:
             elif not include_image and ext in image_valid_exts:
                 move_file = file.parent / "skipped_images" / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
-                if is_err(move_file_res):
+                if ino_is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped image: {file.name}"
@@ -444,7 +346,7 @@ class InoFileHelper:
             elif not include_image and ext in image_convert_exts:
                 move_file = file.parent / "skipped_images_unsupported" / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
-                if is_err(move_file_res):
+                if ino_is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped unsupported image: {file.name}"
@@ -452,7 +354,7 @@ class InoFileHelper:
             elif not include_video and ext in video_valid_exts:
                 move_file = file.parent / "skipped_videos" / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
-                if is_err(move_file_res):
+                if ino_is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped video: {file.name}"
@@ -460,7 +362,7 @@ class InoFileHelper:
             elif not include_video and ext in video_convert_exts:
                 move_file = file.parent / "skipped_videos_unsupported" / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
-                if is_err(move_file_res):
+                if ino_is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped unsupported video: {file.name}"
@@ -469,17 +371,12 @@ class InoFileHelper:
                 # -----skip all unsupported files
                 move_file = file.parent / "unsupported_files" / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
-                if is_err(move_file_res):
+                if ino_is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped unsupported file: {file.name}"
                 )
-
-        return {
-            "success": True,
-            "msg": f"📂 Validating files completed",
-            "log_lines": log_lines
-        }
+        return ino_ok(f"📂 Validating files completed", log_lines=log_lines)
 
     @staticmethod
     async def save_string_as_file(string: str, save_path:str) -> dict:
@@ -503,17 +400,9 @@ class InoFileHelper:
                 await f.write(string)
 
             size = path.stat().st_size if path.exists() else 0
-            return {
-                "success": True,
-                "msg": f"✅ Saved string to '{path}'",
-                "path": str(path),
-                "size": size,
-            }
+            return ino_ok(f"✅ Saved string to '{path}'", path=str(path), size=size)
         except Exception as e:
-            return {
-                "success": False,
-                "msg": f"❌ Failed to save string to '{save_path}': {e}",
-            }
+            return ino_err(f"❌ Failed to save string to '{save_path}': {e}")
 
     @staticmethod
     async def get_file_hash_sha_256(file_path: Path) -> dict:
@@ -532,9 +421,9 @@ class InoFileHelper:
         try:
             path = Path(file_path)
             if not path.exists():
-                return {"success": False, "msg": f"❌ Path not found: {path}"}
+                return ino_err(f"❌ Path not found: {path}")
             if not path.is_file():
-                return {"success": False, "msg": f"❌ Not a file: {path}"}
+                return ino_err(f"❌ Not a file: {path}")
 
             sha256 = hashlib.sha256()
             # Use a reasonable chunk size to support large files
@@ -547,13 +436,6 @@ class InoFileHelper:
                     sha256.update(chunk)
 
             digest = sha256.hexdigest()
-            return {
-                "success": True,
-                "msg": f"✅ SHA-256 computed for '{path.name}'",
-                "sha": digest,
-            }
+            return ino_ok(f"✅ SHA-256 computed for '{path.name}'", sha=digest)
         except Exception as e:
-            return {
-                "success": False,
-                "msg": f"❌ Failed to compute SHA-256 for '{file_path}': {e}",
-            }
+            return ino_err(f"❌ Failed to compute SHA-256 for '{file_path}': {e}")

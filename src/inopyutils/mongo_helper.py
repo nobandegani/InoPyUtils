@@ -55,7 +55,7 @@ from typing import (
 import asyncio
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
-from .util_helper import ok, err
+from .util_helper import ino_ok, ino_err
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorCollection
 
 # Type aliases that do not require motor at runtime
@@ -264,9 +264,9 @@ class InoMongoHelper:
         try:
             db = self._require_db()
             await db.command("ping")
-            return ok("pong", connected=True)
+            return ino_ok("pong", connected=True)
         except Exception as e:
-            return err("ping_failed", error=str(e))
+            return ino_err("ping_failed", error=str(e))
 
     # ------------------------------
     # Core operations
@@ -361,9 +361,9 @@ class InoMongoHelper:
                 doc,
                 convert_id_to_str=convert_id_to_str if convert_id_to_str is not None else self._convert_id_to_str_default,
             )
-            return ok("found" if converted is not None else "not_found", data=converted, found=converted is not None)
+            return ino_ok("found" if converted is not None else "not_found", data=converted, found=converted is not None)
         except Exception as e:
-            return err("find_one_failed", error=str(e))
+            return ino_err("find_one_failed", error=str(e))
 
     async def find_many(
         self,
@@ -391,9 +391,9 @@ class InoMongoHelper:
             do_convert = convert_id_to_str if convert_id_to_str is not None else self._convert_id_to_str_default
             async for doc in cursor:
                 items.append(self._convert_id(doc, convert_id_to_str=do_convert) or {})
-            return ok("found_many", items=items, count=len(items))
+            return ino_ok("found_many", items=items, count=len(items))
         except Exception as e:
-            return err("find_many_failed", error=str(e))
+            return ino_err("find_many_failed", error=str(e))
 
     async def iter_many(
         self,
@@ -495,9 +495,9 @@ class InoMongoHelper:
             doc = dict(document)
             result = await coll.insert_one(doc)  # type: ignore[no-any-return]
             inserted_id = getattr(result, "inserted_id", None)
-            return ok("inserted_one", inserted_id=str(inserted_id) if inserted_id is not None else None)
+            return ino_ok("inserted_one", inserted_id=str(inserted_id) if inserted_id is not None else None)
         except Exception as e:
-            return err("insert_one_failed", error=str(e))
+            return ino_err("insert_one_failed", error=str(e))
 
     async def insert_many(self, collection: str, documents: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
         try:
@@ -506,9 +506,9 @@ class InoMongoHelper:
             result = await coll.insert_many(docs)
             ids = getattr(result, "inserted_ids", [])
             str_ids = [str(_id) for _id in ids]
-            return ok("inserted_many", inserted_ids=str_ids, count=len(str_ids))
+            return ino_ok("inserted_many", inserted_ids=str_ids, count=len(str_ids))
         except Exception as e:
-            return err("insert_many_failed", error=str(e))
+            return ino_err("insert_many_failed", error=str(e))
 
     # ---- update/replace ----
     async def update_one(
@@ -523,14 +523,14 @@ class InoMongoHelper:
             coll = self._collection(collection)
             flt_n = self._normalize_filter(flt)
             result = await coll.update_one(flt_n, dict(update), upsert=upsert)
-            return ok(
+            return ino_ok(
                 "updated_one",
                 matched_count=getattr(result, "matched_count", 0),
                 modified_count=getattr(result, "modified_count", 0),
                 upserted_id=(str(result.upserted_id) if getattr(result, "upserted_id", None) is not None else None),
             )
         except Exception as e:
-            return err("update_one_failed", error=str(e))
+            return ino_err("update_one_failed", error=str(e))
 
     async def update_many(
         self,
@@ -544,14 +544,14 @@ class InoMongoHelper:
             coll = self._collection(collection)
             flt_n = self._normalize_filter(flt)
             result = await coll.update_many(flt_n, dict(update), upsert=upsert)
-            return ok(
+            return ino_ok(
                 "updated_many",
                 matched_count=getattr(result, "matched_count", 0),
                 modified_count=getattr(result, "modified_count", 0),
                 upserted_id=(str(result.upserted_id) if getattr(result, "upserted_id", None) is not None else None),
             )
         except Exception as e:
-            return err("update_many_failed", error=str(e))
+            return ino_err("update_many_failed", error=str(e))
 
     async def replace_one(
         self,
@@ -565,14 +565,14 @@ class InoMongoHelper:
             coll = self._collection(collection)
             flt_n = self._normalize_filter(flt)
             result = await coll.replace_one(flt_n, dict(replacement), upsert=upsert)
-            return ok(
+            return ino_ok(
                 "replaced_one",
                 matched_count=getattr(result, "matched_count", 0),
                 modified_count=getattr(result, "modified_count", 0),
                 upserted_id=(str(result.upserted_id) if getattr(result, "upserted_id", None) is not None else None),
             )
         except Exception as e:
-            return err("replace_one_failed", error=str(e))
+            return ino_err("replace_one_failed", error=str(e))
 
     # ---- delete ----
     async def delete_one(self, collection: str, flt: Filter) -> Dict[str, Any]:
@@ -580,18 +580,18 @@ class InoMongoHelper:
             coll = self._collection(collection)
             flt_n = self._normalize_filter(flt)
             result = await coll.delete_one(flt_n)
-            return ok("deleted_one", deleted_count=getattr(result, "deleted_count", 0))
+            return ino_ok("deleted_one", deleted_count=getattr(result, "deleted_count", 0))
         except Exception as e:
-            return err("delete_one_failed", error=str(e))
+            return ino_err("delete_one_failed", error=str(e))
 
     async def delete_many(self, collection: str, flt: Filter) -> Dict[str, Any]:
         try:
             coll = self._collection(collection)
             flt_n = self._normalize_filter(flt)
             result = await coll.delete_many(flt_n)
-            return ok("deleted_many", deleted_count=getattr(result, "deleted_count", 0))
+            return ino_ok("deleted_many", deleted_count=getattr(result, "deleted_count", 0))
         except Exception as e:
-            return err("delete_many_failed", error=str(e))
+            return ino_err("delete_many_failed", error=str(e))
 
     # ---- aggregate / count / indexes ----
     async def aggregate(
@@ -609,18 +609,18 @@ class InoMongoHelper:
             do_convert = convert_id_to_str if convert_id_to_str is not None else self._convert_id_to_str_default
             async for doc in cursor:
                 items.append(self._convert_id(doc, convert_id_to_str=do_convert) or {})
-            return ok("aggregated", items=items, count=len(items))
+            return ino_ok("aggregated", items=items, count=len(items))
         except Exception as e:
-            return err("aggregate_failed", error=str(e))
+            return ino_err("aggregate_failed", error=str(e))
 
     async def count_documents(self, collection: str, flt: Optional[Filter] = None) -> Dict[str, Any]:
         try:
             coll = self._collection(collection)
             flt_n = self._normalize_filter(flt)
             cnt = await coll.count_documents(flt_n)
-            return ok("counted", count=int(cnt))
+            return ino_ok("counted", count=int(cnt))
         except Exception as e:
-            return err("count_documents_failed", error=str(e))
+            return ino_err("count_documents_failed", error=str(e))
 
     async def create_index(
         self, collection: str, keys: Sequence[Tuple[str, SortDirection]], *, unique: bool = False, **kwargs: Any
@@ -628,9 +628,9 @@ class InoMongoHelper:
         try:
             coll = self._collection(collection)
             name = await coll.create_index(list(keys), unique=unique, **kwargs)
-            return ok("index_created", name=name)
+            return ino_ok("index_created", name=name)
         except Exception as e:
-            return err("create_index_failed", error=str(e))
+            return ino_err("create_index_failed", error=str(e))
 
     # ------------------------------
     # Context manager helpers

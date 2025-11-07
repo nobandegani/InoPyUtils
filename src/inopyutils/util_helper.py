@@ -2,13 +2,13 @@ import hashlib
 
 from typing import Any, Dict
 
-def ok(msg: str = "success", **extra: Any) -> Dict[str, Any]:
+def ino_ok(msg: str = "success", **extra: Any) -> Dict[str, Any]:
     return {"success": True, "msg": msg, **extra}
 
-def err(msg: str = "error", **extra: Any) -> Dict[str, Any]:
+def ino_err(msg: str = "error", **extra: Any) -> Dict[str, Any]:
     return {"success": False, "msg": msg, **extra}
 
-def is_err(res: Any):
+def ino_is_err(res: Any):
     if isinstance(res, tuple):
         if all(i is not None for i in res):
             res = res[0]

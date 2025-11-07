@@ -5,29 +5,29 @@ import aiofiles
 from typing import Union, Dict, Any, Optional, List
 from copy import deepcopy
 
-from .util_helper import ok, err
+from .util_helper import ino_ok, ino_err
 
 class InoJsonHelper:
     @staticmethod
     def string_to_dict(json_string: str) -> Dict:
         """Convert JSON string to dictionary with proper error handling."""
         try:
-            return ok("JSON string successfully converted to dictionary", data=json.loads(json_string))
+            return ino_ok("JSON string successfully converted to dictionary", data=json.loads(json_string))
         except json.JSONDecodeError as e:
-            return err(f"Invalid JSON string: {str(e)}", data=None)
+            return ino_err(f"Invalid JSON string: {str(e)}", data=None)
         except Exception as e:
-            return err(f"Error parsing JSON: {str(e)}", data=None)
+            return ino_err(f"Error parsing JSON: {str(e)}", data=None)
 
     @staticmethod
     def dict_to_string(json_data: Union[dict, list, Any], indent: Optional[int] = None, ensure_ascii: bool = False) -> Dict:
         """Convert dictionary/list/any JSON-serializable object to JSON string."""
         try:
             json_string = json.dumps(json_data, indent=indent, ensure_ascii=ensure_ascii)
-            return ok("Data successfully converted to JSON string", data=json_string)
+            return ino_ok("Data successfully converted to JSON string", data=json_string)
         except TypeError as e:
-            return err(f"Object not JSON serializable: {str(e)}", data=None)
+            return ino_err(f"Object not JSON serializable: {str(e)}", data=None)
         except Exception as e:
-            return err(f"Error converting to JSON string: {str(e)}", data=None)
+            return ino_err(f"Error converting to JSON string: {str(e)}", data=None)
 
     @staticmethod
     def is_valid(json_string: str) -> bool:
@@ -50,11 +50,11 @@ class InoJsonHelper:
             async with aiofiles.open(file_path, 'w', encoding='utf-8') as file:
                 await file.write(json.dumps(json_data, indent=2, ensure_ascii=False))
             
-            return ok("save json successful")
+            return ino_ok("save json successful")
         except json.JSONDecodeError as e:
-            return err(f"Invalid JSON string: {str(e)}")
+            return ino_err(f"Invalid JSON string: {str(e)}")
         except Exception as e:
-            return err(f"Error saving file: {str(e)}")
+            return ino_err(f"Error saving file: {str(e)}")
 
     @staticmethod
     def save_string_as_json_sync(json_string: str, file_path: str) -> Dict:
@@ -68,11 +68,11 @@ class InoJsonHelper:
             with open(file_path, 'w', encoding='utf-8') as file:
                 file.write(json.dumps(json_data, indent=2, ensure_ascii=False))
             
-            return ok("save json successful")
+            return ino_ok("save json successful")
         except json.JSONDecodeError as e:
-            return err(f"Invalid JSON string: {str(e)}")
+            return ino_err(f"Invalid JSON string: {str(e)}")
         except Exception as e:
-            return err(f"Error saving file: {str(e)}")
+            return ino_err(f"Error saving file: {str(e)}")
 
     @staticmethod
     async def save_json_as_json_async(json_data: Union[dict, list], file_path: str) -> Dict:
@@ -84,9 +84,9 @@ class InoJsonHelper:
             async with aiofiles.open(file_path, 'w', encoding='utf-8') as file:
                 await file.write(json.dumps(json_data, indent=2, ensure_ascii=False))
             
-            return ok("save json successful")
+            return ino_ok("save json successful")
         except Exception as e:
-            return err(f"Error saving file: {str(e)}")
+            return ino_err(f"Error saving file: {str(e)}")
 
     @staticmethod
     def save_json_as_json_sync(json_data: Union[dict, list], file_path: str) -> Dict:
@@ -98,9 +98,9 @@ class InoJsonHelper:
             with open(file_path, 'w', encoding='utf-8') as file:
                 file.write(json.dumps(json_data, indent=2, ensure_ascii=False))
             
-            return {"success": True, "msg": "save json successful"}
+            return ino_ok("save json successful")
         except Exception as e:
-            return {"success": False, "msg": f"Error saving file: {str(e)}"}
+            return ino_err(f"Error saving file: {str(e)}")
 
     @staticmethod
     async def read_json_from_file_async(file_path: str) -> Dict:
@@ -109,14 +109,13 @@ class InoJsonHelper:
             async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
                 content = await file.read()
                 json_data = json.loads(content)
-            
-            return {"success": True, "msg": "JSON file successfully read and parsed", "data": json_data}
+            return ino_ok("read json successful", data=json_data)
         except FileNotFoundError:
-            return {"success": False, "msg": f"File not found: {file_path}", "data": None}
+            return ino_err(f"File not found: {file_path}", data=None)
         except json.JSONDecodeError as e:
-            return {"success": False, "msg": f"Invalid JSON in file: {str(e)}", "data": None}
+            return ino_err(f"Invalid JSON in file: {str(e)}", data=None)
         except Exception as e:
-            return {"success": False, "msg": f"Error reading file: {str(e)}", "data": None}
+            return ino_err(f"Error reading file: {str(e)}", data=None)
 
     @staticmethod
     def read_json_from_file_sync(file_path: str) -> Dict:
@@ -125,32 +124,31 @@ class InoJsonHelper:
             with open(file_path, 'r', encoding='utf-8') as file:
                 content = file.read()
                 json_data = json.loads(content)
-            
-            return {"success": True, "msg": "JSON file successfully read and parsed", "data": json_data}
+            return ino_ok("read json successful", data=json_data)
         except FileNotFoundError:
-            return {"success": False, "msg": f"File not found: {file_path}", "data": None}
+            return ino_err(f"File not found: {file_path}", data=None)
         except json.JSONDecodeError as e:
-            return {"success": False, "msg": f"Invalid JSON in file: {str(e)}", "data": None}
+            return ino_err(f"Invalid JSON in file: {str(e)}", data=None)
         except Exception as e:
-            return {"success": False, "msg": f"Error reading file: {str(e)}", "data": None}
+            return ino_err(f"Error reading file: {str(e)}", data=None)
 
     @staticmethod
     def pretty_print(json_data: Union[dict, list, Any], indent: int = 2) -> Dict:
         """Pretty print JSON data with proper formatting."""
         try:
             formatted = json.dumps(json_data, indent=indent, ensure_ascii=False, sort_keys=True)
-            return {"success": True, "msg": "JSON data successfully formatted", "data": formatted}
+            return ino_ok("JSON data successfully pretty printed", data=formatted)
         except Exception as e:
-            return {"success": False, "msg": f"Error formatting JSON: {str(e)}", "data": None}
+            return ino_err(f"Error pretty printing JSON: {str(e)}", data=None)
 
     @staticmethod
     def minify(json_data: Union[dict, list, Any]) -> Dict:
         """Minify JSON data by removing all whitespace."""
         try:
             minified = json.dumps(json_data, separators=(',', ':'), ensure_ascii=False)
-            return {"success": True, "msg": "JSON data successfully minified", "data": minified}
+            return ino_ok("JSON data successfully minified", data=minified)
         except Exception as e:
-            return {"success": False, "msg": f"Error minifying JSON: {str(e)}", "data": None}
+            return ino_err(f"Error minifying JSON: {str(e)}", data=None)
 
     @staticmethod
     def deep_merge(dict1: dict, dict2: dict) -> Dict:
@@ -166,9 +164,9 @@ class InoJsonHelper:
                         target[key] = value
             
             _merge(result, dict2)
-            return {"success": True, "msg": "Dictionaries successfully merged", "data": result}
+            return ino_ok("Dictionaries successfully merged", data=result)
         except Exception as e:
-            return {"success": False, "msg": f"Error merging dictionaries: {str(e)}", "data": None}
+            return ino_err(f"Error merging dictionaries: {str(e)}", data=None)
 
     @staticmethod
     def safe_get(json_data: dict, path: str, default: Any = None, separator: str = ".") -> Any:
@@ -202,9 +200,9 @@ class InoJsonHelper:
                 current = current[key]
             
             current[keys[-1]] = value
-            return {"success": True, "msg": "Value successfully set in JSON data", "data": json_data}
+            return ino_ok("Value successfully set in JSON data", data=json_data)
         except Exception as e:
-            return {"success": False, "msg": f"Error setting value: {str(e)}", "data": None}
+            return ino_err(f"Error setting value in JSON data: {str(e)}", data=None)
 
     @staticmethod
     def flatten(json_data: dict, separator: str = ".") -> Dict:
@@ -227,9 +225,9 @@ class InoJsonHelper:
                 return dict(items)
             
             flattened = _flatten(json_data, sep=separator)
-            return {"success": True, "msg": "JSON data successfully flattened", "data": flattened}
+            return ino_ok("JSON data successfully flattened", data=flattened)
         except Exception as e:
-            return {"success": False, "msg": f"Error flattening JSON: {str(e)}", "data": None}
+            return ino_err(f"Error flattening JSON data: {str(e)}", data=None)
 
     @staticmethod
     def unflatten(flat_data: dict, separator: str = ".") -> Dict:
@@ -246,10 +244,9 @@ class InoJsonHelper:
                     current = current[k]
                 
                 current[keys[-1]] = value
-            
-            return {"success": True, "msg": "Flattened data successfully unflattened", "data": result}
+            return ino_ok("Flattened data successfully unflattened", data=result)
         except Exception as e:
-            return {"success": False, "msg": f"Error unflattening data: {str(e)}", "data": None}
+            return ino_err(f"Error unflattening flattened data: {str(e)}", data=None)
 
     @staticmethod
     def compare(json1: Union[dict, list], json2: Union[dict, list]) -> Dict:
@@ -317,16 +314,9 @@ class InoJsonHelper:
                 return differences
             
             differences = _compare(json1, json2)
-            return {
-                "success": True,
-                "msg": "JSON objects successfully compared", 
-                "data": {
-                    "are_equal": len(differences) == 0,
-                    "differences": differences
-                }
-            }
+            return ino_ok("JSON objects successfully compared", are_equal=len(differences) == 0, data=differences)
         except Exception as e:
-            return {"success": False, "msg": f"Error comparing JSON objects: {str(e)}", "data": None}
+            return ino_err(f"Error comparing JSON objects: {str(e)}", data=None)
 
     @staticmethod
     def filter_keys(json_data: dict, keys_to_keep: List[str], deep: bool = False) -> Dict:
@@ -350,10 +340,9 @@ class InoJsonHelper:
                 filtered_data = _filter_deep(json_data, keys_to_keep)
             else:
                 filtered_data = {k: v for k, v in json_data.items() if k in keys_to_keep}
-            
-            return {"success": True, "msg": "JSON data successfully filtered", "data": filtered_data}
+            return ino_ok("JSON data successfully filtered", data=filtered_data)
         except Exception as e:
-            return {"success": False, "msg": f"Error filtering keys: {str(e)}", "data": None}
+            return ino_err(f"Error filtering JSON data: {str(e)}", data=None)
 
     @staticmethod
     def remove_null_values(json_data: Union[dict, list], remove_empty: bool = False) -> Dict:
@@ -388,9 +377,9 @@ class InoJsonHelper:
                     return obj
             
             cleaned_data = _clean(json_data)
-            return {"success": True, "msg": "Null values successfully removed from JSON data", "data": cleaned_data}
+            return ino_ok("Null values successfully removed from JSON data", data=cleaned_data)
         except Exception as e:
-            return {"success": False, "msg": f"Error removing null values: {str(e)}", "data": None}
+            return ino_err(f"Error removing null values from JSON data: {str(e)}", data=None)
 
     @staticmethod
     def find_field_from_array(json_data: Union[dict, list, Any], field_name: str, field_value: Any) -> dict:
@@ -413,12 +402,6 @@ class InoJsonHelper:
                 # For primitive types, no need to search further
             
             _search(json_data)
-            
-            return {
-                "success": True,
-                "msg": f"Found {len(matches)} objects with field '{field_name}' = '{field_value}'",
-                "first_match": matches[0] if len(matches) > 0 else None,
-                "matches": matches
-            }
+            return ino_ok("Field found successfully", first_match=matches[0] if len(matches) > 0 else None, data=matches)
         except Exception as e:
-            return {"success": False, "msg": f"Error searching for field: {str(e)}", "data": None}
+            return ino_err(f"Error finding field from JSON data: {str(e)}", data=None)

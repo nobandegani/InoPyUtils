@@ -10,7 +10,7 @@ import mimetypes
 import re
 from urllib.parse import urlparse, unquote
 
-from .util_helper import InoUtilHelper, ok, err
+from .util_helper import InoUtilHelper, ino_ok, ino_err
 
 class InoHttpHelper:
     """
@@ -184,9 +184,9 @@ class InoHttpHelper:
                         "attempts": attempt,
                     }
                     if status < 400:
-                        return ok(resp.reason or "", **extra)
+                        return ino_ok(resp.reason or "", **extra)
                     else:
-                        return err(resp.reason or "", **extra)
+                        return ino_err(resp.reason or "", **extra)
 
             except aiohttp.ClientResponseError as cre:
                 # Retry on configured statuses already handled above; for explicit raise_for_status
@@ -195,7 +195,7 @@ class InoHttpHelper:
                     await self._sleep_backoff(attempt)
                     continue
                 # On last attempt or non-retryable status, return failure dict
-                return err(
+                return ino_err(
                     str(cre),
                     status_code=getattr(cre, "status", None),
                     headers={},
@@ -209,7 +209,7 @@ class InoHttpHelper:
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return err(
+                return ino_err(
                     str(ce),
                     status_code=None,
                     headers={},
@@ -223,7 +223,7 @@ class InoHttpHelper:
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return err(
+                return ino_err(
                     "Request timed out: " + str(te),
                     status_code=None,
                     headers={},
@@ -235,7 +235,7 @@ class InoHttpHelper:
 
         # Should not reach here; return failure dict if no response and no exception
         if last_exc:
-            return err(
+            return ino_err(
                 str(last_exc),
                 status_code=getattr(last_exc, "status", None),
                 headers={},
@@ -244,7 +244,7 @@ class InoHttpHelper:
                 method=method.upper(),
                 attempts=attempts,
             )
-        return err(
+        return ino_err(
             "HTTP request failed without exception and without response",
             status_code=None,
             headers={},
@@ -472,7 +472,7 @@ class InoHttpHelper:
         tmp = dest.with_suffix(dest.suffix + temp_suffix)
 
         if dest.exists() and not overwrite:
-            return err(
+            return ino_err(
                 f"Destination exists and overwrite=False: {dest}",
                 status_code=None,
                 headers={},
@@ -575,7 +575,7 @@ class InoHttpHelper:
                         if derived and derived != dest.name:
                             candidate = base_dir / derived
                             if candidate.exists() and not overwrite:
-                                return err(
+                                return ino_err(
                                     f"Destination exists and overwrite=False: {candidate}",
                                     status_code=None,
                                     headers={},
@@ -630,7 +630,7 @@ class InoHttpHelper:
                         os.replace(tmp, dest)
 
                     headers_out = {k: v for k, v in resp.headers.items()}
-                    return ok(
+                    return ino_ok(
                         resp.reason or "",
                         status_code=status,
                         headers=headers_out,
@@ -647,7 +647,7 @@ class InoHttpHelper:
                 if getattr(cre, "status", None) in self._retry_for_statuses and attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return err(
+                return ino_err(
                     str(cre),
                     status_code=getattr(cre, "status", None),
                     headers={},
@@ -663,7 +663,7 @@ class InoHttpHelper:
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return err(
+                return ino_err(
                     str(ce),
                     status_code=None,
                     headers={},
@@ -679,7 +679,7 @@ class InoHttpHelper:
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return err(
+                return ino_err(
                     "Request timed out: " + str(te),
                     status_code=None,
                     headers={},
@@ -696,7 +696,7 @@ class InoHttpHelper:
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
                     continue
-                return err(
+                return ino_err(
                     str(e),
                     status_code=None,
                     headers={},
@@ -709,7 +709,7 @@ class InoHttpHelper:
                 )
 
         # If all attempts failed
-        return err(
+        return ino_err(
             str(last_exc) if last_exc else "Download failed",
             status_code=getattr(last_exc, "status", None) if last_exc else None,
             headers={},
