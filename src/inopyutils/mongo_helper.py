@@ -277,7 +277,19 @@ class MongoHelper:
         out: Dict[str, Any] = dict(flt)
         if "_id" in out:
             out_id = out["_id"]
-            if isinstance(out_id, (str, bytes)) or (hasattr(out_id, "__iter__") and not isinstance(out_id, (dict,))):
+            # Support operator-style filters on _id (e.g., {"_id": {"$in": [...]}})
+            if isinstance(out_id, dict):
+                op_map: Dict[str, Any] = dict(out_id)
+                # List-like operators
+                for op in ("$in", "$nin"):
+                    if op in op_map and isinstance(op_map[op], (list, tuple, set)):
+                        op_map[op] = [self._to_object_id(v) for v in op_map[op]]  # type: ignore[index]
+                # Scalar operators
+                for op in ("$eq", "$ne"):
+                    if op in op_map:
+                        op_map[op] = self._to_object_id(op_map[op])  # type: ignore[index]
+                out["_id"] = op_map
+            elif isinstance(out_id, (str, bytes)) or (hasattr(out_id, "__iter__") and not isinstance(out_id, (dict,))):
                 # Handle both scalar and list of IDs
                 if isinstance(out_id, (list, tuple, set)):
                     out["_id"] = [self._to_object_id(v) for v in out_id]  # type: ignore[assignment]
