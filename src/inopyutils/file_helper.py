@@ -7,6 +7,7 @@ import hashlib
 from pathlib import Path
 import aiofiles
 from .media_helper import InoMediaHelper
+from .util_helper import is_err
 
 class InoFileHelper:
     @staticmethod
@@ -392,7 +393,7 @@ class InoFileHelper:
 
             if include_image and ext in image_valid_exts:
                 image_validate = await InoMediaHelper.image_validate_pillow(file, file)
-                if not image_validate["success"]:
+                if is_err(image_validate):
                     return image_validate
 
                 log_lines.append(
@@ -402,7 +403,7 @@ class InoFileHelper:
             elif include_image and ext in image_convert_exts:
                 new_file = file.with_suffix('.jpg')
                 image_validate = await InoMediaHelper.image_validate_pillow(file, new_file)
-                if not image_validate["success"]:
+                if is_err(image_validate):
                     return image_validate
 
                 log_lines.append(
@@ -435,7 +436,7 @@ class InoFileHelper:
             elif not include_image and ext in image_valid_exts:
                 move_file = file.parent / "skipped_images" / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
-                if not move_file_res["success"]:
+                if is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped image: {file.name}"
@@ -443,7 +444,7 @@ class InoFileHelper:
             elif not include_image and ext in image_convert_exts:
                 move_file = file.parent / "skipped_images_unsupported" / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
-                if not move_file_res["success"]:
+                if is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped unsupported image: {file.name}"
@@ -451,7 +452,7 @@ class InoFileHelper:
             elif not include_video and ext in video_valid_exts:
                 move_file = file.parent / "skipped_videos" / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
-                if not move_file_res["success"]:
+                if is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped video: {file.name}"
@@ -459,7 +460,7 @@ class InoFileHelper:
             elif not include_video and ext in video_convert_exts:
                 move_file = file.parent / "skipped_videos_unsupported" / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
-                if not move_file_res["success"]:
+                if is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped unsupported video: {file.name}"
@@ -468,7 +469,7 @@ class InoFileHelper:
                 # -----skip all unsupported files
                 move_file = file.parent / "unsupported_files" / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
-                if not move_file_res["success"]:
+                if is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
                     f"⚠️ Skipped unsupported file: {file.name}"
