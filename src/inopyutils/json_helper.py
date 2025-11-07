@@ -5,27 +5,29 @@ import aiofiles
 from typing import Union, Dict, Any, Optional, List
 from copy import deepcopy
 
+from .util_helper import ok, err
+
 class InoJsonHelper:
     @staticmethod
     def string_to_dict(json_string: str) -> Dict:
         """Convert JSON string to dictionary with proper error handling."""
         try:
-            return {"success": True, "msg": "JSON string successfully converted to dictionary", "data": json.loads(json_string)}
+            return ok("JSON string successfully converted to dictionary", data=json.loads(json_string))
         except json.JSONDecodeError as e:
-            return {"success": False, "msg": f"Invalid JSON string: {str(e)}", "data": None}
+            return err(f"Invalid JSON string: {str(e)}", data=None)
         except Exception as e:
-            return {"success": False, "msg": f"Error parsing JSON: {str(e)}", "data": None}
+            return err(f"Error parsing JSON: {str(e)}", data=None)
 
     @staticmethod
     def dict_to_string(json_data: Union[dict, list, Any], indent: Optional[int] = None, ensure_ascii: bool = False) -> Dict:
         """Convert dictionary/list/any JSON-serializable object to JSON string."""
         try:
             json_string = json.dumps(json_data, indent=indent, ensure_ascii=ensure_ascii)
-            return {"success": True, "msg": "Data successfully converted to JSON string", "data": json_string}
+            return ok("Data successfully converted to JSON string", data=json_string)
         except TypeError as e:
-            return {"success": False, "msg": f"Object not JSON serializable: {str(e)}", "data": None}
+            return err(f"Object not JSON serializable: {str(e)}", data=None)
         except Exception as e:
-            return {"success": False, "msg": f"Error converting to JSON string: {str(e)}", "data": None}
+            return err(f"Error converting to JSON string: {str(e)}", data=None)
 
     @staticmethod
     def is_valid(json_string: str) -> bool:
@@ -48,11 +50,11 @@ class InoJsonHelper:
             async with aiofiles.open(file_path, 'w', encoding='utf-8') as file:
                 await file.write(json.dumps(json_data, indent=2, ensure_ascii=False))
             
-            return {"success": True, "msg": "save json successful"}
+            return ok("save json successful")
         except json.JSONDecodeError as e:
-            return {"success": False, "msg": f"Invalid JSON string: {str(e)}"}
+            return err(f"Invalid JSON string: {str(e)}")
         except Exception as e:
-            return {"success": False, "msg": f"Error saving file: {str(e)}"}
+            return err(f"Error saving file: {str(e)}")
 
     @staticmethod
     def save_string_as_json_sync(json_string: str, file_path: str) -> Dict:
@@ -66,11 +68,11 @@ class InoJsonHelper:
             with open(file_path, 'w', encoding='utf-8') as file:
                 file.write(json.dumps(json_data, indent=2, ensure_ascii=False))
             
-            return {"success": True, "msg": "save json successful"}
+            return ok("save json successful")
         except json.JSONDecodeError as e:
-            return {"success": False, "msg": f"Invalid JSON string: {str(e)}"}
+            return err(f"Invalid JSON string: {str(e)}")
         except Exception as e:
-            return {"success": False, "msg": f"Error saving file: {str(e)}"}
+            return err(f"Error saving file: {str(e)}")
 
     @staticmethod
     async def save_json_as_json_async(json_data: Union[dict, list], file_path: str) -> Dict:
@@ -82,9 +84,9 @@ class InoJsonHelper:
             async with aiofiles.open(file_path, 'w', encoding='utf-8') as file:
                 await file.write(json.dumps(json_data, indent=2, ensure_ascii=False))
             
-            return {"success": True, "msg": "save json successful"}
+            return ok("save json successful")
         except Exception as e:
-            return {"success": False, "msg": f"Error saving file: {str(e)}"}
+            return err(f"Error saving file: {str(e)}")
 
     @staticmethod
     def save_json_as_json_sync(json_data: Union[dict, list], file_path: str) -> Dict:
