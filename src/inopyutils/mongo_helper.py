@@ -46,17 +46,17 @@ from typing import (
     Iterable,
     List,
     Mapping,
-    MutableMapping,
     Optional,
     Sequence,
     Tuple,
-    TYPE_CHECKING,
     Union,
     Literal,
 )
 import asyncio
 from datetime import datetime, timezone
+from urllib.parse import quote_plus
 from .util_helper import ok, err
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorCollection
 
 # Type aliases that do not require motor at runtime
 Document = Dict[str, Any]
@@ -85,8 +85,8 @@ class MongoHelper:
     """
 
     def __init__(self, *, convert_id_to_str: bool = True) -> None:
-        self._client: Optional["_AsyncIOMotorClient"] = None
-        self._db: Optional["_AsyncIOMotorDatabase"] = None
+        self._client: Optional[AsyncIOMotorClient] = None
+        self._db: Optional[AsyncIOMotorDatabase] = None
         self._db_name: Optional[str] = None
         self._uri: Optional[str] = None
         self._convert_id_to_str_default: bool = convert_id_to_str
@@ -106,8 +106,13 @@ class MongoHelper:
     async def connect(
         self,
         *,
-        uri: str,
+        uri: Optional[str] = None,
         db_name: str,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        auth_source: Optional[str] = None,
         appname: Optional[str] = None,
         convert_id_to_str: Optional[bool] = None,
         check_connection: bool = True,
@@ -118,14 +123,19 @@ class MongoHelper:
         """Create and (optionally) validate a single shared AsyncIOMotorClient and database.
 
         Parameters
-        - uri: MongoDB connection string
-        - db_name: default database name to use
-        - appname: optional appname for MongoDB monitoring/diagnostics
-        - convert_id_to_str: override instance-wide default for id conversion
-        - check_connection: if True (default), ping the DB on connect to fail fast
-        - ensure_db_exists: if True, materialize the database if empty by creating a small collection
-        - ensure_collection_name: name of the collection to create when materializing the DB (default: "_meta")
-        - client_kwargs: passed directly to AsyncIOMotorClient (timeouts, SSL, etc.)
+        - uri: Full MongoDB connection string. If provided, takes precedence over host/port/username/password.
+        - db_name: Default database name to use.
+        - host: MongoDB host (e.g., 'localhost' or 'my.mongo.internal'). Used if uri is not provided.
+        - port: MongoDB port (e.g., 27017). Used if uri is not provided.
+        - username: Username for authentication. Used if uri is not provided.
+        - password: Password for authentication. Used if uri is not provided.
+        - auth_source: Authentication database name (maps to URI param 'authSource') when building from components.
+        - appname: Optional appname for MongoDB monitoring/diagnostics.
+        - convert_id_to_str: Override instance-wide default for id conversion.
+        - check_connection: If True (default), ping the DB on connect to fail fast.
+        - ensure_db_exists: If True, materialize the database if empty by creating a small collection.
+        - ensure_collection_name: Name of the collection to create when materializing the DB (default: "_meta").
+        - client_kwargs: Passed directly to AsyncIOMotorClient (timeouts, SSL, etc.).
 
         This method is safe to call multiple times; duplicate calls are no-ops
         if already connected with the same parameters.
@@ -133,10 +143,32 @@ class MongoHelper:
         if convert_id_to_str is not None:
             self._convert_id_to_str_default = convert_id_to_str
 
+        # Build a URI from components when not provided
+        final_uri = uri
+        if not final_uri:
+            if not host and not port and not username and not password:
+                raise ValueError("Either 'uri' or at least 'host' (and optionally port/username/password) must be provided.")
+            host_part = host or "localhost"
+            port_part = f":{port}" if port else ""
+            auth_part = ""
+            if username:
+                u = quote_plus(username)
+                if password is not None:
+                    p = quote_plus(password)
+                    auth_part = f"{u}:{p}@"
+                else:
+                    auth_part = f"{u}@"
+            final_uri = f"mongodb://{auth_part}{host_part}{port_part}"
+
+            # Attach authSource query if requested and not already present
+            if auth_source:
+                sep = "&" if "?" in final_uri else "?"
+                final_uri = f"{final_uri}{sep}authSource={quote_plus(auth_source)}"
+
         async with self._lock:
             if self.is_connected:
                 # If already connected to the same target, just return
-                if self._uri == uri and self._db_name == db_name:
+                if self._uri == final_uri and self._db_name == db_name:
                     return
                 # Otherwise close the existing connection before re-connecting
                 await self.close()
@@ -154,7 +186,7 @@ class MongoHelper:
             # Reasonable default to fail fast in startup if server is unreachable
             client_kwargs.setdefault("serverSelectionTimeoutMS", 5_000)
 
-            client = motor.AsyncIOMotorClient(uri, **client_kwargs)
+            client = motor.AsyncIOMotorClient(final_uri, **client_kwargs)
             db = client[db_name]
 
             # Optionally validate connection (forces server selection on startup)
@@ -175,7 +207,7 @@ class MongoHelper:
 
             self._client = client
             self._db = db
-            self._uri = uri
+            self._uri = final_uri
             self._db_name = db_name
 
     async def _ensure_db_exists(self, db: Any, ensure_collection_name: Optional[str]) -> None:
@@ -239,14 +271,14 @@ class MongoHelper:
     # ------------------------------
     # Core operations
     # ------------------------------
-    def _require_db(self) -> "_AsyncIOMotorDatabase":
+    def _require_db(self) -> AsyncIOMotorDatabase:
         if self._db is None:
             raise NotInitializedError(
                 "MongoHelper is not initialized. Call await mongo.connect(...) during app startup."
             )
         return self._db
 
-    def _collection(self, name: str) -> "_AsyncIOMotorCollection":
+    def _collection(self, name: str) -> AsyncIOMotorCollection:
         return self._require_db()[name]
 
     @staticmethod
