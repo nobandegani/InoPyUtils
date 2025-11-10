@@ -218,7 +218,6 @@ class InoFileHelper:
     ) -> dict:
         to_path.mkdir(parents=True, exist_ok=True)
 
-        log_file = to_path.parent / f"{to_path.stem}_copy_log.txt"
         log_lines = []
 
         if iterate_subfolders:
@@ -229,42 +228,38 @@ class InoFileHelper:
         error = False
         for idx, file in enumerate(files, start=1):
             if not file.is_file():
-                log_lines.append(f"⚠️ {file}: not a file")
+                log_lines.append(f"Not a file: {file}")
                 continue
 
             ext = file.suffix.lower()
             if ext == "":
-                log_lines.append(f"⚠️ file with no extension: {file.name}")
+                log_lines.append(f"File with no extension: {file.name}")
                 ext = file.name
 
             if rename_files:
                 new_name = f"{prefix_name}_{idx:03}{ext}"
             else:
                 if not file.stem.strip():
-                    log_lines.append(f"⚠️ Empty or invalid filename detected: {file.name}")
+                    log_lines.append(f"Empty or invalid filename detected: {file.name}")
                     new_name = f"unnamed_{idx:03}{ext}"
                 else:
                     new_name = file.name
 
             dest = to_path / new_name
             if dest.exists():
-                log_lines.append(f"⚠️ target file trying to copy to is already exist: {dest}")
+                log_lines.append(f"Target file trying to copy to is already exist: {dest}")
 
             try:
                 await asyncio.to_thread(shutil.copy2, str(file), str(dest))
-                log_lines.append(f"✅ Copied: {file.resolve()} => {dest.resolve()}")
+                log_lines.append(f"Copied: {file.resolve()} => {dest.resolve()}")
             except Exception as e:
-                log_lines.append(f"❌ Failed to copy {file} → {dest} — {e}")
+                log_lines.append(f"Failed to copy {file} → {dest} — {e}")
                 error = True
 
-        if log_lines:
-            with open(log_file, "w", encoding="utf-8") as log:
-                log.write("\n".join(log_lines))
-
         if error:
-            return ino_err(f"Failed to copy files, see log file: {log_file}")
+            return ino_err(f"Failed to copy files, check logs", logs=log_lines)
 
-        return ino_ok(f"📂 Coping and renaming files completed")
+        return ino_ok(f"Coping and renaming files completed", logs=log_lines)
 
     @staticmethod
     async def validate_files(
@@ -286,6 +281,12 @@ class InoFileHelper:
         video_convert_exts = video_convert_exts or [".avi", ".mov", ".mkv", ".flv"]
 
         log_lines = []
+
+        skipped_images_path = input_path / "skipped_images"
+        skipped_images_unsupported_path = input_path / "skipped_images_unsupported"
+        skipped_videos_path = input_path / "skipped_videos"
+        skipped_videos_unsupported_path = input_path / "skipped_videos_unsupported"
+        unsupported_files_path = input_path / "unsupported_files"
 
         for file in input_path.iterdir():
             if not file.is_file():
@@ -336,47 +337,56 @@ class InoFileHelper:
                     video_convert_res
                 )
             elif not include_image and ext in image_valid_exts:
-                move_file = file.parent / "skipped_images" / file.name
+                move_file = skipped_images_path / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
                 if ino_is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
-                    f"⚠️ Skipped image: {file.name}"
+                    f"Skipped image: {file.name}"
                 )
             elif not include_image and ext in image_convert_exts:
-                move_file = file.parent / "skipped_images_unsupported" / file.name
+                move_file = skipped_images_unsupported_path / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
                 if ino_is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
-                    f"⚠️ Skipped unsupported image: {file.name}"
+                    f"Skipped unsupported image: {file.name}"
                 )
             elif not include_video and ext in video_valid_exts:
-                move_file = file.parent / "skipped_videos" / file.name
+                move_file = skipped_videos_path / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
                 if ino_is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
-                    f"⚠️ Skipped video: {file.name}"
+                    f"Skipped video: {file.name}"
                 )
             elif not include_video and ext in video_convert_exts:
-                move_file = file.parent / "skipped_videos_unsupported" / file.name
+                move_file = skipped_videos_unsupported_path / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
                 if ino_is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
-                    f"⚠️ Skipped unsupported video: {file.name}"
+                    f"Skipped unsupported video: {file.name}"
                 )
             else:
                 # -----skip all unsupported files
-                move_file = file.parent / "unsupported_files" / file.name
+                move_file = unsupported_files_path / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
                 if ino_is_err(move_file_res):
                     return move_file_res
                 log_lines.append(
-                    f"⚠️ Skipped unsupported file: {file.name}"
+                    f"Skipped unsupported file: {file.name}"
                 )
-        return ino_ok(f"📂 Validating files completed", log_lines=log_lines)
+
+        return ino_ok(
+            f"Validating files completed",
+            skipped_images_path=skipped_images_path,
+            skipped_images_unsupported_path=skipped_images_unsupported_path,
+            skipped_videos_path=skipped_videos_path,
+            skipped_videos_unsupported_path=skipped_videos_unsupported_path,
+            unsupported_files_path=unsupported_files_path,
+            logs=log_lines
+        )
 
     @staticmethod
     async def save_string_as_file(string: str, save_path:str) -> dict:
