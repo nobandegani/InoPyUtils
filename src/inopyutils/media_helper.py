@@ -31,21 +31,32 @@ class InoMediaHelper:
             ]
 
         if change_fps:
-            args += ['-r', str(max_fps)]
+            args += ["-filter:v", f"fps={max_fps}"]
 
         if change_res:
-            args += ['-vf', f"scale='if(gt(iw,ih),min(iw,{max_res}),-2)':'if(gt(ih,iw),min(ih,{max_res}),-2)'"]
+            # if width>=height, setting width to min(iw,max_res) and keeping AR. else setting height.
+            scale = f"scale='if(gte(iw,ih),min(iw,{max_res}),-2)':'if(gte(ih,iw),min(ih,{max_res}),-2)'"
+            # preventing upscaling
+            scale = f"{scale}:force_original_aspect_ratio=decrease"
+            # merging with existing filter if fps already added
+            if "-filter:v" in args:
+                i = args.index("-filter:v") + 1
+                args[i] = args[i] + f", {scale}"
+            else:
+                args += ["-filter:v", scale]
 
         args += [
-            '-preset', 'medium',
-            '-crf', '23',
-            '-c:v', 'libx264',
-            '-c:a', 'aac',
-            '-b:a', '192k'
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",  # 20–24 typical; lower = larger
+            "-pix_fmt", "yuv420p",
+            "-maxrate", "12M",  # cap spikes (tune to your needs)
+            "-bufsize", "24M",  # 2× maxrate is common
+            "-movflags", "+faststart",  # better MP4 streaming
         ]
 
-        args += ['-f', 'mp4']
-        args += [str(temp_output)]
+        args += ["-c:a", "aac", "-b:a", "192k"]
+        args += ["-f", "mp4", str(temp_output)]
 
         try:
             proc = await asyncio.create_subprocess_exec(

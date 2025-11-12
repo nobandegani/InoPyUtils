@@ -546,6 +546,80 @@ class InoS3Helper:
             f"list_objects(s3://{bucket}, prefix='{norm_prefix}')"
         )
 
+    async def count_files_in_folder(
+            self,
+            s3_folder_key: str,
+            bucket_name: Optional[str] = None,
+            recursive: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Count files under an S3 "folder" (prefix).
+
+        Args:
+            s3_folder_key: The folder key (prefix). Can be provided with or without a trailing '/'.
+            bucket_name: Optional bucket override. Uses initialized default if not provided.
+            recursive: If True, count all files under the prefix recursively. If False, count only
+                       immediate files directly under the folder (no subfolders).
+
+        Returns:
+            Dict with fields: success, msg, count, bucket, s3_folder_key, recursive, and error_code on failure.
+        """
+        err = self._validate_bucket(bucket_name)
+        if err:
+            # Augment with count for convenience
+            return {**err, "count": 0, "recursive": recursive}
+
+        bucket = bucket_name or self.bucket_name
+
+        # Normalize and ensure trailing slash for folder semantics
+        prefix = self._normalize_key(s3_folder_key)
+        if prefix and not prefix.endswith('/'):
+            prefix += '/'
+
+        async def _count_op() -> Dict[str, Any]:
+            async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
+                total = 0
+                token: Optional[str] = None
+                while True:
+                    params: Dict[str, Any] = {
+                        'Bucket': bucket,
+                        'Prefix': prefix,
+                        'MaxKeys': 1000,
+                    }
+                    # For non-recursive listing, use delimiter to collapse common prefixes
+                    if not recursive:
+                        params['Delimiter'] = '/'
+                    if token:
+                        params['ContinuationToken'] = token
+
+                    resp = await s3.list_objects_v2(**params)
+                    contents = resp.get('Contents', []) or []
+                    # Count only actual objects (skip folder markers)
+                    for obj in contents:
+                        key = obj.get('Key', '')
+                        if not key.endswith('/'):
+                            total += 1
+
+                    if not resp.get('IsTruncated', False):
+                        break
+                    token = resp.get('NextContinuationToken')
+
+                msg = f"✅ Found {total} files in s3://{bucket}/{prefix} (recursive={recursive})"
+                logging.info(msg)
+                return {
+                    'success': True,
+                    'msg': msg,
+                    'count': total,
+                    'bucket': bucket,
+                    's3_folder_key': prefix,
+                    'recursive': recursive,
+                }
+
+        return await self._retry_operation(
+            _count_op,
+            f"count_files_in_folder(s3://{bucket}/{prefix}, recursive={recursive})"
+        )
+
     async def delete_object(
             self,
             s3_key: str,
