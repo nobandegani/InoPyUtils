@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inopyutils"
-version = "1.4.11"
+version = "1.4.12"
 authors = [
     { name = "Inoland", email = "contact@inoland.net" },
 ]
@@ -22,16 +22,16 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "pillow",
-    "pillow_heif",
-    "opencv-python",
-    "inocloudreve",
-    "aioboto3",
-    "aiofiles",
-    "aiohttp",
-    "botocore",
-    "boto3",
-    "motor"
+    "pillow>=11.3.0",
+    "pillow_heif>=1.0.0",
+    "opencv-python>=4.12.0.88",
+    "inocloudreve>=0.2.6",
+    "aioboto3>=15.1.0",
+    "aiofiles>=24.1.0",
+    "aiohttp>=3.12.15",
+    "botocore>=1.39.11",
+    "boto3>=1.39.11",
+    "motor>=3.7.1"
 ]
 
 [tool.setuptools.packages.find]
