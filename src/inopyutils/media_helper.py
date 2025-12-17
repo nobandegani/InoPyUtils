@@ -1,8 +1,6 @@
 import asyncio
-from dataclasses import dataclass
-from fractions import Fraction
 from pathlib import Path
-from typing import Dict, Any, Tuple, Optional, Union
+from typing import Dict, Any, Tuple
 from PIL import Image, ImageOps, ExifTags
 from PIL.Image import Resampling
 
@@ -10,8 +8,6 @@ from pillow_heif import register_heif_opener
 
 import cv2
 import shutil
-
-from .metadata_meida_helper import PhotoMetadata
 
 register_heif_opener()
 
@@ -145,10 +141,7 @@ class InoMediaHelper:
             input_path: Path,
             output_path: Path | None = None,
             max_res: int = 3200,
-            jpg_quality: int = 92,
-            metadata: Optional["PhotoMetadata"] = None,
-            remove_metadata: bool = False,
-            overwrite_existing: bool = True,
+            jpg_quality: int = 92
     ) -> Dict[str, Any]:
         """
         - Fix EXIF rotation
@@ -157,187 +150,6 @@ class InoMediaHelper:
         - Preserve EXIF + ICC profile where possible
         """
         _ORIENTATION_TAG = {v: k for k, v in ExifTags.TAGS.items()}.get("Orientation")
-
-        # Build a reverse lookup once
-        _TAG_BY_NAME: Dict[str, int] = {v: k for k, v in ExifTags.TAGS.items()}
-
-        def _to_rational(value: Union[str, int, float, Fraction]) -> Tuple[int, int]:
-            if isinstance(value, Fraction):
-                return (value.numerator, value.denominator)
-            if isinstance(value, (int,)):
-                return (int(value), 1)
-            if isinstance(value, float):
-                f = Fraction(value).limit_denominator(10000)
-                return (f.numerator, f.denominator)
-            if isinstance(value, str):
-                s = value.strip().lower()
-                # "1/125"
-                if "/" in s:
-                    try:
-                        num, den = s.split("/", 1)
-                        return (int(num.strip()), int(den.strip()))
-                    except Exception:
-                        pass
-                # "f/2.8" or "2.8"
-                s = s.replace("f/", "").replace("mm", "").strip()
-                try:
-                    f = Fraction(s).limit_denominator(10000)
-                    return (f.numerator, f.denominator)
-                except Exception:
-                    # last resort
-                    try:
-                        f = Fraction(float(s)).limit_denominator(10000)
-                        return (f.numerator, f.denominator)
-                    except Exception:
-                        return (0, 1)
-            # Unknown type
-            return (0, 1)
-
-        def _apply_metadata(exif: Image.Exif, meta: "PhotoMetadata", overwrite: bool) -> Tuple[Image.Exif, Dict[str, Any], Dict[str, str]]:
-            applied: Dict[str, Any] = {}
-            skipped: Dict[str, str] = {}
-
-            def set_tag(tag_name: str, value: Any, transformer=None):
-                if value is None:
-                    return
-                tag_id = _TAG_BY_NAME.get(tag_name)
-                if tag_id is None:
-                    skipped[tag_name] = "No EXIF tag available"
-                    return
-                if not overwrite and exif.get(tag_id) not in (None, b"", 0, 0.0):
-                    skipped[tag_name] = "Existing value retained"
-                    return
-                try:
-                    v = transformer(value) if transformer else value
-                    exif[tag_id] = v
-                    applied[tag_name] = v
-                except Exception as e:
-                    skipped[tag_name] = f"Failed to set: {e}"
-
-            # Camera info
-            set_tag("Make", meta.camera_maker)
-            set_tag("Model", meta.camera_model)
-            # Use ImageDescription for category if provided
-            set_tag("ImageDescription", meta.camera_category)
-
-            # Core exposure
-            set_tag("FNumber", meta.f_stop, _to_rational)
-            set_tag("ExposureTime", meta.exposure_time, _to_rational)
-            set_tag("ISOSpeedRatings", meta.iso_speed, lambda v: int(v) if v is not None else v)
-            set_tag("ExposureBiasValue", meta.exposure_bias, _to_rational)
-            set_tag("MaxApertureValue", meta.max_aperture, _to_rational)
-            set_tag("FocalLength", meta.focal_length, _to_rational)
-            set_tag("SubjectDistance", meta.subject_distance, _to_rational)
-            set_tag("MeteringMode", meta.metering_mode, lambda v: int(v))
-            set_tag("ExposureProgram", meta.exposure_program, lambda v: int(v))
-            set_tag("LightSource", meta.light_source, lambda v: int(v))
-            set_tag("Flash", meta.flash_mode, lambda v: int(v))
-            set_tag("FlashEnergy", meta.flash_energy, _to_rational)
-            set_tag("FocalLengthIn35mmFilm", meta.focal_length_35mm, lambda v: int(v))
-
-            # Advanced
-            set_tag("LensMake", meta.lens_maker)
-            set_tag("LensModel", meta.lens_model)
-            set_tag("BodySerialNumber", meta.camera_serial_number)
-            set_tag("Contrast", meta.contrast, lambda v: int(v))
-            set_tag("BrightnessValue", meta.brightness, _to_rational)
-            set_tag("Saturation", meta.saturation, lambda v: int(v))
-            set_tag("Sharpness", meta.sharpness, lambda v: int(v))
-            set_tag("WhiteBalance", meta.white_balance, lambda v: int(v))
-            set_tag("PhotometricInterpretation", meta.photometric_interpretation, lambda v: int(v))
-            set_tag("DigitalZoomRatio", meta.digital_zoom, _to_rational)
-            # ExifVersion expects 4-byte string like b"0231"
-            def _exif_version_transform(v: Any):
-                if isinstance(v, (bytes, bytearray)):
-                    return bytes(v)
-                s = str(v).strip().replace(".", "")
-                s = (s + "0000")[:4]
-                return s.encode("ascii", errors="ignore")
-
-            set_tag("ExifVersion", meta.exif_version, _exif_version_transform)
-
-            # Flash maker/model not standard in EXIF; record into UserComment if provided
-            if meta.flash_maker or meta.flash_model:
-                tag_id = _TAG_BY_NAME.get("UserComment")
-                comment = f"FlashMaker={meta.flash_maker or ''}; FlashModel={meta.flash_model or ''}".strip()
-                try:
-                    if tag_id is not None:
-                        if overwrite or not exif.get(tag_id):
-                            exif[tag_id] = comment.encode("utf-8", errors="ignore")
-                            applied["UserComment"] = comment
-                        else:
-                            skipped["UserComment"] = "Existing value retained"
-                    else:
-                        skipped["Flash maker/model"] = "No standard EXIF tag; skipped"
-                except Exception as e:
-                    skipped["UserComment"] = f"Failed to set: {e}"
-
-            # GPS data (Latitude, Longitude, Altitude)
-            try:
-                gps_info_tag = _TAG_BY_NAME.get("GPSInfo")
-                if gps_info_tag is not None and (meta.gps_latitude is not None or meta.gps_longitude is not None or meta.gps_altitude is not None):
-                    # Respect overwrite flag
-                    if not overwrite and exif.get(gps_info_tag):
-                        skipped["GPSInfo"] = "Existing value retained"
-                    else:
-                        # Build GPS IFD dict
-                        # Pillow expects a dict with numeric GPS tag IDs
-                        gps_ifd: Dict[int, Any] = {}
-                        _GPS_TAG_BY_NAME: Dict[str, int] = {v: k for k, v in ExifTags.GPSTAGS.items()}
-
-                        def _parse_float(v: Any) -> Optional[float]:
-                            if v is None:
-                                return None
-                            try:
-                                if isinstance(v, (int, float)):
-                                    return float(v)
-                                s = str(v).strip()
-                                return float(s)
-                            except Exception:
-                                return None
-
-                        def _deg_to_dms_rational(deg_val: float) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
-                            deg = abs(deg_val)
-                            d = int(deg)
-                            m_float = (deg - d) * 60.0
-                            m = int(m_float)
-                            s = (m_float - m) * 60.0
-                            # Use denominator 10000 for seconds for better precision
-                            d_r = (d, 1)
-                            m_r = (m, 1)
-                            from fractions import Fraction as _F
-                            s_f = _F(s).limit_denominator(10000)
-                            s_r = (s_f.numerator, s_f.denominator)
-                            return (d_r, m_r, s_r)
-
-                        lat = _parse_float(meta.gps_latitude)
-                        lon = _parse_float(meta.gps_longitude)
-                        alt = _parse_float(meta.gps_altitude)
-
-                        if lat is not None:
-                            gps_ifd[_GPS_TAG_BY_NAME["GPSLatitudeRef"]] = "N" if lat >= 0 else "S"
-                            gps_ifd[_GPS_TAG_BY_NAME["GPSLatitude"]] = _deg_to_dms_rational(lat)
-                            applied["GPSLatitude"] = lat
-                        if lon is not None:
-                            gps_ifd[_GPS_TAG_BY_NAME["GPSLongitudeRef"]] = "E" if lon >= 0 else "W"
-                            gps_ifd[_GPS_TAG_BY_NAME["GPSLongitude"]] = _deg_to_dms_rational(lon)
-                            applied["GPSLongitude"] = lon
-                        if alt is not None:
-                            gps_ifd[_GPS_TAG_BY_NAME["GPSAltitudeRef"]] = 0 if alt >= 0 else 1
-                            alt_abs = abs(alt)
-                            a_f = Fraction(alt_abs).limit_denominator(1000)
-                            gps_ifd[_GPS_TAG_BY_NAME["GPSAltitude"]] = (a_f.numerator, a_f.denominator)
-                            applied["GPSAltitude"] = alt
-
-                        # Only set if we added something
-                        if gps_ifd:
-                            exif[gps_info_tag] = gps_ifd
-                elif gps_info_tag is None and (meta.gps_latitude is not None or meta.gps_longitude is not None or meta.gps_altitude is not None):
-                    skipped["GPSInfo"] = "No EXIF GPSInfo tag available"
-            except Exception as e:
-                skipped["GPSInfo"] = f"Failed to set: {e}"
-
-            return exif, applied, skipped
 
         def _work() -> Dict[str, Any]:
             try:
@@ -390,7 +202,7 @@ class InoMediaHelper:
                         is_jpeg_in and not need_resize and not orientation_changed
                     ):
                         # If target equals source path -> nothing to do
-                        if final_out.resolve() == input_path.resolve() and not remove_metadata and metadata is None:
+                        if final_out.resolve() == input_path.resolve():
                             return {
                                 "success": True,
                                 "msg": f"✅ No changes needed: {input_path.name}",
@@ -401,8 +213,7 @@ class InoMediaHelper:
                                 "output": str(final_out),
                             }
                         # Else, only extension/path change is needed -> defer filesystem rename
-                        # But do not rename if we need to strip or write metadata; force re-encode then
-                        pending_rename = not (remove_metadata or metadata is not None)
+                        pending_rename = True
 
                     if not pending_rename:
                         # Handle transparency & modes
@@ -426,33 +237,15 @@ class InoMediaHelper:
                             "progressive": True,
                         }
 
-                        # ICC handling
-                        if orig_icc and not remove_metadata:
+                        if orig_icc:
                             save_kwargs["icc_profile"] = orig_icc
 
-                        # EXIF handling
-                        exif_to_write = None
-                        if not remove_metadata:
-                            # start from existing EXIF if available
-                            exif_to_write = orig_exif if orig_exif else Image.Exif()
-                            # Ensure Orientation is reset to 1 after pixel transpose
-                            if _ORIENTATION_TAG is not None:
-                                try:
-                                    exif_to_write[_ORIENTATION_TAG] = 1
-                                except Exception:
-                                    pass
-                            # Apply requested metadata
-                            if metadata is not None:
-                                exif_to_write, applied_meta, skipped_meta = _apply_metadata(exif_to_write, metadata, overwrite_existing)
-                            else:
-                                applied_meta, skipped_meta = {}, {}
+                        if orig_exif and _ORIENTATION_TAG is not None:
                             try:
-                                save_kwargs["exif"] = exif_to_write.tobytes()
+                                orig_exif[_ORIENTATION_TAG] = 1
+                                save_kwargs["exif"] = orig_exif.tobytes()
                             except Exception:
-                                # If EXIF serialization fails, drop EXIF
-                                exif_to_write = None
-                        else:
-                            applied_meta, skipped_meta = {}, {}
+                                pass
 
                         img.save(final_out, **save_kwargs)
 
@@ -505,8 +298,6 @@ class InoMediaHelper:
                     "old_size": old_size,
                     "new_size": new_size,
                     "output": str(final_out),
-                    "metadata_applied": applied_meta if not pending_rename else {},
-                    "metadata_skipped": skipped_meta if not pending_rename else {},
                 }
 
             except Exception as e:
