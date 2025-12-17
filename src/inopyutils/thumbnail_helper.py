@@ -4,10 +4,11 @@ from typing import Iterable, List, Optional
 
 try:
     # Pillow is required
-    from PIL import Image, ImageOps
+    from PIL import Image, ImageOps, ImageFilter
 except Exception:  # pragma: no cover - import error surfaced at runtime
     Image = None
     ImageOps = None
+    ImageFilter = None
 
 
 class InoThumbnailHelper:
@@ -30,7 +31,7 @@ class InoThumbnailHelper:
         output_dir: Optional[Path] = None,
         sizes: Iterable[int] = (256, 512, 1024),
         quality: int = 50,
-        crop: bool = True,
+        crop: bool = False,
     ) -> List[str]:
         """Create 1:1 thumbnails by cropping or padding to square, then resizing.
 
@@ -45,7 +46,7 @@ class InoThumbnailHelper:
             quality: JPEG quality (1-95). Higher is better quality but larger size. Metadata
                 is stripped from the output files.
             crop: If True, center-crop to 1:1 (default). If False, keep full image and pad
-                with black to achieve 1:1.
+                to 1:1 using a blurred background derived from the image (no black bars).
 
         Returns:
             List of full paths to the generated thumbnails
@@ -94,7 +95,7 @@ class InoThumbnailHelper:
             # We'll decide per-extension when saving.
 
             # Prepare a square image either by center-cropping (crop=True)
-            # or padding to square with black bars (crop=False)
+            # or padding to square with a blurred background (crop=False)
             width, height = im.size
             if crop:
                 side = min(width, height)
@@ -107,11 +108,29 @@ class InoThumbnailHelper:
                 side = max(width, height)
                 # Ensure RGB for consistent padding background
                 im_rgb = im if im.mode == "RGB" else im.convert("RGB")
-                padded = Image.new("RGB", (side, side), color=(0, 0, 0))
+
+                # Build a blurred background that fills the square without distortion:
+                # 1) Scale the image so the smaller side equals `side` (cover)
+                # 2) Center-crop to a square of (side x side)
+                resample_bg = getattr(Image, "Resampling", Image).LANCZOS
+                scale = side / float(min(width, height)) if min(width, height) else 1.0
+                bg_w = max(1, int(round(width * scale)))
+                bg_h = max(1, int(round(height * scale)))
+                bg = im_rgb.resize((bg_w, bg_h), resample=resample_bg)
+                bg_left = max(0, (bg_w - side) // 2)
+                bg_top = max(0, (bg_h - side) // 2)
+                bg = bg.crop((bg_left, bg_top, bg_left + side, bg_top + side))
+
+                # Apply Gaussian blur to create the background
+                if ImageFilter is not None:
+                    radius = max(2, int(side * 0.02))  # proportional blur radius
+                    bg = bg.filter(ImageFilter.GaussianBlur(radius=radius))
+
+                # Paste the original image centered on the blurred background
                 paste_left = (side - width) // 2
                 paste_top = (side - height) // 2
-                padded.paste(im_rgb, (paste_left, paste_top))
-                square = padded
+                bg.paste(im_rgb, (paste_left, paste_top))
+                square = bg
 
             # Resampling selection compatible across Pillow versions
             resample = getattr(Image, "Resampling", Image).LANCZOS
@@ -154,7 +173,7 @@ class InoThumbnailHelper:
         output_dir: Optional[Path] = None,
         sizes: Iterable[int] = (256, 512, 1024),
         quality: int = 90,
-        crop: bool = True,
+        crop: bool = False,
     ) -> List[str]:
         """Async wrapper for `image_generate_square_thumbnails`.
 
