@@ -30,8 +30,9 @@ class InoThumbnailHelper:
         output_dir: Optional[Path] = None,
         sizes: Iterable[int] = (256, 512, 1024),
         quality: int = 50,
+        crop: bool = True,
     ) -> List[str]:
-        """Create 1:1 thumbnails by center-cropping and resizing.
+        """Create 1:1 thumbnails by cropping or padding to square, then resizing.
 
         - Keeps original base filename, adds prefix: t_{size}_ and ALWAYS saves as .jpg
         - Uses Pillow for processing
@@ -43,6 +44,8 @@ class InoThumbnailHelper:
             sizes: Iterable of square edge sizes to generate
             quality: JPEG quality (1-95). Higher is better quality but larger size. Metadata
                 is stripped from the output files.
+            crop: If True, center-crop to 1:1 (default). If False, keep full image and pad
+                with black to achieve 1:1.
 
         Returns:
             List of full paths to the generated thumbnails
@@ -90,14 +93,25 @@ class InoThumbnailHelper:
             # Convert to RGB for formats that don't support modes well (e.g., JPEG)
             # We'll decide per-extension when saving.
 
-            # Center-crop to square (1:1 aspect ratio)
+            # Prepare a square image either by center-cropping (crop=True)
+            # or padding to square with black bars (crop=False)
             width, height = im.size
-            side = min(width, height)
-            left = (width - side) // 2
-            top = (height - side) // 2
-            right = left + side
-            bottom = top + side
-            square = im.crop((left, top, right, bottom))
+            if crop:
+                side = min(width, height)
+                left = (width - side) // 2
+                top = (height - side) // 2
+                right = left + side
+                bottom = top + side
+                square = im.crop((left, top, right, bottom))
+            else:
+                side = max(width, height)
+                # Ensure RGB for consistent padding background
+                im_rgb = im if im.mode == "RGB" else im.convert("RGB")
+                padded = Image.new("RGB", (side, side), color=(0, 0, 0))
+                paste_left = (side - width) // 2
+                paste_top = (side - height) // 2
+                padded.paste(im_rgb, (paste_left, paste_top))
+                square = padded
 
             # Resampling selection compatible across Pillow versions
             resample = getattr(Image, "Resampling", Image).LANCZOS
@@ -140,6 +154,7 @@ class InoThumbnailHelper:
         output_dir: Optional[Path] = None,
         sizes: Iterable[int] = (256, 512, 1024),
         quality: int = 90,
+        crop: bool = True,
     ) -> List[str]:
         """Async wrapper for `image_generate_square_thumbnails`.
 
@@ -153,4 +168,5 @@ class InoThumbnailHelper:
             output_dir,
             sizes,
             quality,
+            crop,
         )
