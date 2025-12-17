@@ -1,4 +1,4 @@
-from .media_helper import InoMediaHelper
+from .media_helper import InoMediaHelper, PhotoMetadata
 from .config_helper import InoConfigHelper
 from .file_helper import InoFileHelper
 from .log_helper import InoLogHelper, LogType
@@ -14,6 +14,7 @@ from .csv_helper import InoCsvHelper
 __all__ = [
     "InoConfigHelper",
     "InoMediaHelper", 
+    "PhotoMetadata",
     "InoFileHelper",
     "InoLogHelper",
     "LogType",
