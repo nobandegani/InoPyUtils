@@ -181,3 +181,5 @@ cython_debug/
 .cursorindexingignore
 
 tests_hidden/
+tests/*/assets
+tests/*/converted
