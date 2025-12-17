@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Dict, Any, Tuple, Optional, Union
 
 @dataclass
-class PhotoMetadata:
+class InoPhotoMetadata:
     def __init__(self, profile: Optional[str] = None):
         if profile == "iphone":
             self.iphone_profile()

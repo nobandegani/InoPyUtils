@@ -1,5 +1,5 @@
-import os
-from typing import Iterable, List
+from pathlib import Path
+from typing import Iterable, List, Optional
 
 try:
     # Pillow is required
@@ -24,9 +24,9 @@ class InoThumbnailHelper:
     """
 
     @staticmethod
-    def generate_square_thumbnails(
-        image_path: str,
-        output_dir: str,
+    def image_generate_square_thumbnails(
+        image_path: Path,
+        output_dir: Optional[Path] = None,
         sizes: Iterable[int] = (256, 512, 1024),
     ) -> List[str]:
         """Create 1:1 thumbnails by center-cropping and resizing.
@@ -35,8 +35,9 @@ class InoThumbnailHelper:
         - Uses Pillow for processing
 
         Args:
-            image_path: Full path to input image
-            output_dir: Directory where thumbnails will be saved (created if absent)
+            image_path: Path to input image (Path)
+            output_dir: Directory where thumbnails will be saved (Path). If None, uses the
+                same directory as image_path. The directory will be created if absent.
             sizes: Iterable of square edge sizes to generate
 
         Returns:
@@ -46,15 +47,15 @@ class InoThumbnailHelper:
         if Image is None or ImageOps is None:
             raise ImportError("Pillow (PIL) is required to use InoThumbnailHelper")
 
-        if not image_path or not os.path.isfile(image_path):
+        # Normalize paths
+        image_path = Path(image_path)
+        if not image_path.is_file():
             raise FileNotFoundError(f"Input image not found: {image_path}")
 
-        if not output_dir:
-            raise ValueError("output_dir must be provided")
-
-        # Normalize and ensure output directory exists
-        output_dir = os.path.abspath(output_dir)
-        os.makedirs(output_dir, exist_ok=True)
+        # Determine output directory
+        output_dir = Path(output_dir) if output_dir is not None else image_path.parent
+        # Ensure output directory exists
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         # Validate and normalize sizes
         norm_sizes: List[int] = []
@@ -68,11 +69,10 @@ class InoThumbnailHelper:
             if v not in norm_sizes:
                 norm_sizes.append(v)
 
-        base_name = os.path.basename(image_path)
-        name, _ext = os.path.splitext(base_name)
+        name = image_path.stem
 
         # Open image and correct orientation using EXIF
-        with Image.open(image_path) as im:
+        with Image.open(str(image_path)) as im:
             im = ImageOps.exif_transpose(im)
 
             # Convert to RGB for formats that don't support modes well (e.g., JPEG)
@@ -96,7 +96,7 @@ class InoThumbnailHelper:
 
                 # Always save as JPEG with .jpg extension
                 out_filename = f"t_{size}_{name}.jpg"
-                out_path = os.path.join(output_dir, out_filename)
+                out_path = output_dir / out_filename
 
                 # Ensure RGB for JPEG output
                 if resized.mode not in ("RGB", "L"):
@@ -104,12 +104,12 @@ class InoThumbnailHelper:
 
                 # Explicitly save as JPEG
                 resized.save(
-                    out_path,
+                    str(out_path),
                     format="JPEG",
                     quality=90,
                     optimize=True,
                     progressive=True,
                 )
-                output_paths.append(out_path)
+                output_paths.append(str(out_path))
 
         return output_paths
