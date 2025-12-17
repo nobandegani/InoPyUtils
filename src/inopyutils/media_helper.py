@@ -1,6 +1,8 @@
 import asyncio
+from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional, Union
 from PIL import Image, ImageOps, ExifTags
 from PIL.Image import Resampling
 
@@ -10,6 +12,44 @@ import cv2
 import shutil
 
 register_heif_opener()
+
+
+@dataclass
+class PhotoMetadata:
+    # Camera category can be stored in ImageDescription
+    camera_category: Optional[str] = None
+    camera_maker: Optional[str] = None
+    camera_model: Optional[str] = None
+
+    # Core exposure fields
+    f_stop: Optional[Union[str, int, float]] = None            # EXIF FNumber
+    exposure_time: Optional[Union[str, int, float]] = None     # EXIF ExposureTime
+    iso_speed: Optional[Union[int, str]] = None                # EXIF ISOSpeedRatings (int)
+    exposure_bias: Optional[Union[str, int, float]] = None     # EXIF ExposureBiasValue
+    focal_length: Optional[Union[str, int, float]] = None      # EXIF FocalLength
+    max_aperture: Optional[Union[str, int, float]] = None      # EXIF MaxApertureValue
+    metering_mode: Optional[Union[int, str]] = None            # EXIF MeteringMode (enum int)
+    subject_distance: Optional[Union[str, int, float]] = None  # EXIF SubjectDistance
+    flash_mode: Optional[Union[int, str]] = None               # EXIF Flash (bitmask/int)
+    flash_energy: Optional[Union[str, int, float]] = None      # EXIF FlashEnergy
+    focal_length_35mm: Optional[Union[int, str]] = None        # EXIF FocalLengthIn35mmFilm
+
+    # Advanced
+    lens_maker: Optional[str] = None
+    lens_model: Optional[str] = None
+    flash_maker: Optional[str] = None  # Not standard; will be placed in UserComment
+    flash_model: Optional[str] = None  # Not standard; will be placed in UserComment
+    camera_serial_number: Optional[str] = None                 # EXIF BodySerialNumber
+    contrast: Optional[Union[int, str]] = None                 # EXIF Contrast (enum int)
+    brightness: Optional[Union[str, int, float]] = None        # EXIF BrightnessValue
+    light_source: Optional[Union[int, str]] = None             # EXIF LightSource (enum int)
+    exposure_program: Optional[Union[int, str]] = None         # EXIF ExposureProgram (enum int)
+    saturation: Optional[Union[int, str]] = None               # EXIF Saturation (enum int)
+    sharpness: Optional[Union[int, str]] = None                # EXIF Sharpness (enum int)
+    white_balance: Optional[Union[int, str]] = None            # EXIF WhiteBalance (enum int)
+    photometric_interpretation: Optional[Union[int, str]] = None  # EXIF PhotometricInterpretation
+    digital_zoom: Optional[Union[str, int, float]] = None      # EXIF DigitalZoomRatio
+    exif_version: Optional[Union[str, bytes, int]] = None      # EXIF ExifVersion e.g., b"0231"
 
 class InoMediaHelper:
     @staticmethod
@@ -141,7 +181,10 @@ class InoMediaHelper:
             input_path: Path,
             output_path: Path | None = None,
             max_res: int = 3200,
-            jpg_quality: int = 92
+            jpg_quality: int = 92,
+            metadata: Optional["PhotoMetadata"] = None,
+            remove_metadata: bool = False,
+            overwrite_existing: bool = True,
     ) -> Dict[str, Any]:
         """
         - Fix EXIF rotation
@@ -150,6 +193,122 @@ class InoMediaHelper:
         - Preserve EXIF + ICC profile where possible
         """
         _ORIENTATION_TAG = {v: k for k, v in ExifTags.TAGS.items()}.get("Orientation")
+
+        # Build a reverse lookup once
+        _TAG_BY_NAME: Dict[str, int] = {v: k for k, v in ExifTags.TAGS.items()}
+
+        def _to_rational(value: Union[str, int, float, Fraction]) -> Tuple[int, int]:
+            if isinstance(value, Fraction):
+                return (value.numerator, value.denominator)
+            if isinstance(value, (int,)):
+                return (int(value), 1)
+            if isinstance(value, float):
+                f = Fraction(value).limit_denominator(10000)
+                return (f.numerator, f.denominator)
+            if isinstance(value, str):
+                s = value.strip().lower()
+                # "1/125"
+                if "/" in s:
+                    try:
+                        num, den = s.split("/", 1)
+                        return (int(num.strip()), int(den.strip()))
+                    except Exception:
+                        pass
+                # "f/2.8" or "2.8"
+                s = s.replace("f/", "").replace("mm", "").strip()
+                try:
+                    f = Fraction(s).limit_denominator(10000)
+                    return (f.numerator, f.denominator)
+                except Exception:
+                    # last resort
+                    try:
+                        f = Fraction(float(s)).limit_denominator(10000)
+                        return (f.numerator, f.denominator)
+                    except Exception:
+                        return (0, 1)
+            # Unknown type
+            return (0, 1)
+
+        def _apply_metadata(exif: Image.Exif, meta: "PhotoMetadata", overwrite: bool) -> Tuple[Image.Exif, Dict[str, Any], Dict[str, str]]:
+            applied: Dict[str, Any] = {}
+            skipped: Dict[str, str] = {}
+
+            def set_tag(tag_name: str, value: Any, transformer=None):
+                if value is None:
+                    return
+                tag_id = _TAG_BY_NAME.get(tag_name)
+                if tag_id is None:
+                    skipped[tag_name] = "No EXIF tag available"
+                    return
+                if not overwrite and exif.get(tag_id) not in (None, b"", 0, 0.0):
+                    skipped[tag_name] = "Existing value retained"
+                    return
+                try:
+                    v = transformer(value) if transformer else value
+                    exif[tag_id] = v
+                    applied[tag_name] = v
+                except Exception as e:
+                    skipped[tag_name] = f"Failed to set: {e}"
+
+            # Camera info
+            set_tag("Make", meta.camera_maker)
+            set_tag("Model", meta.camera_model)
+            # Use ImageDescription for category if provided
+            set_tag("ImageDescription", meta.camera_category)
+
+            # Core exposure
+            set_tag("FNumber", meta.f_stop, _to_rational)
+            set_tag("ExposureTime", meta.exposure_time, _to_rational)
+            set_tag("ISOSpeedRatings", meta.iso_speed, lambda v: int(v) if v is not None else v)
+            set_tag("ExposureBiasValue", meta.exposure_bias, _to_rational)
+            set_tag("MaxApertureValue", meta.max_aperture, _to_rational)
+            set_tag("FocalLength", meta.focal_length, _to_rational)
+            set_tag("SubjectDistance", meta.subject_distance, _to_rational)
+            set_tag("MeteringMode", meta.metering_mode, lambda v: int(v))
+            set_tag("ExposureProgram", meta.exposure_program, lambda v: int(v))
+            set_tag("LightSource", meta.light_source, lambda v: int(v))
+            set_tag("Flash", meta.flash_mode, lambda v: int(v))
+            set_tag("FlashEnergy", meta.flash_energy, _to_rational)
+            set_tag("FocalLengthIn35mmFilm", meta.focal_length_35mm, lambda v: int(v))
+
+            # Advanced
+            set_tag("LensMake", meta.lens_maker)
+            set_tag("LensModel", meta.lens_model)
+            set_tag("BodySerialNumber", meta.camera_serial_number)
+            set_tag("Contrast", meta.contrast, lambda v: int(v))
+            set_tag("BrightnessValue", meta.brightness, _to_rational)
+            set_tag("Saturation", meta.saturation, lambda v: int(v))
+            set_tag("Sharpness", meta.sharpness, lambda v: int(v))
+            set_tag("WhiteBalance", meta.white_balance, lambda v: int(v))
+            set_tag("PhotometricInterpretation", meta.photometric_interpretation, lambda v: int(v))
+            set_tag("DigitalZoomRatio", meta.digital_zoom, _to_rational)
+            # ExifVersion expects 4-byte string like b"0231"
+            def _exif_version_transform(v: Any):
+                if isinstance(v, (bytes, bytearray)):
+                    return bytes(v)
+                s = str(v).strip().replace(".", "")
+                s = (s + "0000")[:4]
+                return s.encode("ascii", errors="ignore")
+
+            set_tag("ExifVersion", meta.exif_version, _exif_version_transform)
+
+            # Flash maker/model not standard in EXIF; record into UserComment if provided
+            if meta.flash_maker or meta.flash_model:
+                tag_id = _TAG_BY_NAME.get("UserComment")
+                comment = f"FlashMaker={meta.flash_maker or ''}; FlashModel={meta.flash_model or ''}".strip()
+                try:
+                    if tag_id is not None:
+                        if overwrite or not exif.get(tag_id):
+                            exif[tag_id] = comment.encode("utf-8", errors="ignore")
+                            applied["UserComment"] = comment
+                        else:
+                            skipped["UserComment"] = "Existing value retained"
+                    else:
+                        skipped["Flash maker/model"] = "No standard EXIF tag; skipped"
+                except Exception as e:
+                    skipped["UserComment"] = f"Failed to set: {e}"
+
+            return exif, applied, skipped
 
         def _work() -> Dict[str, Any]:
             try:
@@ -202,7 +361,7 @@ class InoMediaHelper:
                         is_jpeg_in and not need_resize and not orientation_changed
                     ):
                         # If target equals source path -> nothing to do
-                        if final_out.resolve() == input_path.resolve():
+                        if final_out.resolve() == input_path.resolve() and not remove_metadata and metadata is None:
                             return {
                                 "success": True,
                                 "msg": f"✅ No changes needed: {input_path.name}",
@@ -213,7 +372,8 @@ class InoMediaHelper:
                                 "output": str(final_out),
                             }
                         # Else, only extension/path change is needed -> defer filesystem rename
-                        pending_rename = True
+                        # But do not rename if we need to strip or write metadata; force re-encode then
+                        pending_rename = not (remove_metadata or metadata is not None)
 
                     if not pending_rename:
                         # Handle transparency & modes
@@ -237,15 +397,33 @@ class InoMediaHelper:
                             "progressive": True,
                         }
 
-                        if orig_icc:
+                        # ICC handling
+                        if orig_icc and not remove_metadata:
                             save_kwargs["icc_profile"] = orig_icc
 
-                        if orig_exif and _ORIENTATION_TAG is not None:
+                        # EXIF handling
+                        exif_to_write = None
+                        if not remove_metadata:
+                            # start from existing EXIF if available
+                            exif_to_write = orig_exif if orig_exif else Image.Exif()
+                            # Ensure Orientation is reset to 1 after pixel transpose
+                            if _ORIENTATION_TAG is not None:
+                                try:
+                                    exif_to_write[_ORIENTATION_TAG] = 1
+                                except Exception:
+                                    pass
+                            # Apply requested metadata
+                            if metadata is not None:
+                                exif_to_write, applied_meta, skipped_meta = _apply_metadata(exif_to_write, metadata, overwrite_existing)
+                            else:
+                                applied_meta, skipped_meta = {}, {}
                             try:
-                                orig_exif[_ORIENTATION_TAG] = 1
-                                save_kwargs["exif"] = orig_exif.tobytes()
+                                save_kwargs["exif"] = exif_to_write.tobytes()
                             except Exception:
-                                pass
+                                # If EXIF serialization fails, drop EXIF
+                                exif_to_write = None
+                        else:
+                            applied_meta, skipped_meta = {}, {}
 
                         img.save(final_out, **save_kwargs)
 
@@ -298,6 +476,8 @@ class InoMediaHelper:
                     "old_size": old_size,
                     "new_size": new_size,
                     "output": str(final_out),
+                    "metadata_applied": applied_meta if not pending_rename else {},
+                    "metadata_skipped": skipped_meta if not pending_rename else {},
                 }
 
             except Exception as e:
