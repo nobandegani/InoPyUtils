@@ -29,6 +29,7 @@ class InoThumbnailHelper:
         image_path: Path,
         output_dir: Optional[Path] = None,
         sizes: Iterable[int] = (256, 512, 1024),
+        quality: int = 50,
     ) -> List[str]:
         """Create 1:1 thumbnails by center-cropping and resizing.
 
@@ -40,6 +41,8 @@ class InoThumbnailHelper:
             output_dir: Directory where thumbnails will be saved (Path). If None, uses the
                 same directory as image_path. The directory will be created if absent.
             sizes: Iterable of square edge sizes to generate
+            quality: JPEG quality (1-95). Higher is better quality but larger size. Metadata
+                is stripped from the output files.
 
         Returns:
             List of full paths to the generated thumbnails
@@ -57,6 +60,14 @@ class InoThumbnailHelper:
         output_dir = Path(output_dir) if output_dir is not None else image_path.parent
         # Ensure output directory exists
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Validate quality
+        try:
+            quality = int(quality)
+        except Exception as e:
+            raise ValueError(f"Invalid quality value: {quality}") from e
+        if not (1 <= quality <= 95):
+            raise ValueError(f"quality must be between 1 and 95, got {quality}")
 
         # Validate and normalize sizes
         norm_sizes: List[int] = []
@@ -96,18 +107,26 @@ class InoThumbnailHelper:
                 resized = square.resize((size, size), resample=resample)
 
                 # Always save as JPEG with .jpg extension
-                out_filename = f"t_{size}_{name}.jpg"
+                out_filename = f"{name}_ino_t_{size}_.jpg"
                 out_path = output_dir / out_filename
 
                 # Ensure RGB for JPEG output
                 if resized.mode not in ("RGB", "L"):
                     resized = resized.convert("RGB")
 
-                # Explicitly save as JPEG
-                resized.save(
+                # Strip metadata by creating a fresh image and pasting the pixel data
+                if resized.mode != "RGB":
+                    rgb_img = resized.convert("RGB")
+                else:
+                    rgb_img = resized
+                clean_img = Image.new("RGB", rgb_img.size)
+                clean_img.paste(rgb_img)
+
+                # Explicitly save as JPEG with provided quality, no EXIF/ICC passed
+                clean_img.save(
                     str(out_path),
                     format="JPEG",
-                    quality=90,
+                    quality=quality,
                     optimize=True,
                     progressive=True,
                 )
@@ -120,6 +139,7 @@ class InoThumbnailHelper:
         image_path: Path,
         output_dir: Optional[Path] = None,
         sizes: Iterable[int] = (256, 512, 1024),
+        quality: int = 90,
     ) -> List[str]:
         """Async wrapper for `image_generate_square_thumbnails`.
 
@@ -132,4 +152,5 @@ class InoThumbnailHelper:
             image_path,
             output_dir,
             sizes,
+            quality,
         )
