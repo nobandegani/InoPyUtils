@@ -743,6 +743,8 @@ class InoS3Helper:
                         local_file_path = local_folder / relative_path
                         
                         try:
+                            # Ensure parent directories exist for nested files
+                            local_file_path.parent.mkdir(parents=True, exist_ok=True)
                             # Use the shared client to download
                             await s3.download_file(bucket, s3_key, str(local_file_path))
                             return {
@@ -1063,8 +1065,10 @@ class InoS3Helper:
                         "bucket": bucket
                     }
             except ClientError as e:
-                error_code = e.response['Error']['Code']
-                if error_code == 'NoSuchKey' or error_code == '404':
+                err = e.response.get('Error', {}) if hasattr(e, 'response') else {}
+                error_code = err.get('Code')
+                # Treat not-found variants as non-error negative existence
+                if error_code in ('NoSuchKey', 'NotFound', '404'):
                     return {
                         "success": True,
                         "msg": f"✅ Object s3://{bucket}/{norm_key} does not exist",
