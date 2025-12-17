@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -113,3 +114,22 @@ class InoThumbnailHelper:
                 output_paths.append(str(out_path))
 
         return output_paths
+
+    @staticmethod
+    async def image_generate_square_thumbnails_async(
+        image_path: Path,
+        output_dir: Optional[Path] = None,
+        sizes: Iterable[int] = (256, 512, 1024),
+    ) -> List[str]:
+        """Async wrapper for `image_generate_square_thumbnails`.
+
+        Runs the CPU-bound Pillow processing in a background thread to avoid
+        blocking the event loop. API mirrors the synchronous method and returns
+        the same list of generated file paths.
+        """
+        return await asyncio.to_thread(
+            InoThumbnailHelper.image_generate_square_thumbnails,
+            image_path,
+            output_dir,
+            sizes,
+        )
