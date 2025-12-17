@@ -153,83 +153,128 @@ class InoMediaHelper:
 
         def _work() -> Dict[str, Any]:
             try:
-                in_ext = input_path.suffix.lower()
-                is_jpeg_in = in_ext == ".jpg"
-
+                # Ensure output has .jpg extension when provided
                 if output_path is not None:
                     final_out = Path(output_path)
                     if final_out.suffix.lower() != ".jpg":
                         final_out = final_out.with_suffix(".jpg")
                 else:
-                    final_out = input_path if is_jpeg_in else input_path.with_suffix(".jpg")
+                    final_out = None  # decide after opening
 
-                final_out.parent.mkdir(parents=True, exist_ok=True)
-
+                pending_rename = False
                 with Image.open(input_path) as img:
+                    input_format = (img.format or "").upper()
+                    is_jpeg_in = input_format == "JPEG"
+
+                    # Decide final_out now if not provided
+                    if final_out is None:
+                        # Always target .jpg extension as requested
+                        final_out = input_path.with_suffix(".jpg")
+
+                    # Prepare output folder
+                    final_out.parent.mkdir(parents=True, exist_ok=True)
+
+                    # Capture original metadata early
                     orig_exif = img.getexif()
+                    orig_icc = img.info.get("icc_profile")
                     orig_orientation = (
                         orig_exif.get(_ORIENTATION_TAG, 1)
                         if (orig_exif and _ORIENTATION_TAG is not None)
                         else 1
                     )
 
+                    # Fix orientation in pixels
                     img = ImageOps.exif_transpose(img)
                     orientation_changed = orig_orientation != 1
 
+                    # Compute resizing
                     old_size: Tuple[int, int] = (img.width, img.height)
                     need_resize = img.width > max_res or img.height > max_res
                     if need_resize:
                         scale = min(max_res / img.width, max_res / img.height)
-                        new_size = (int(img.width * scale), int(img.height * scale))
+                        new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
                         img = img.resize(new_size, resample=Resampling.LANCZOS)
                     else:
                         new_size = old_size
 
+                    # If input already JPEG and no pixel changes are required
                     if (
-                            is_jpeg_in
-                            and not need_resize
-                            and not orientation_changed
-                            and (output_path is None or final_out.resolve() == input_path.resolve())
+                        is_jpeg_in and not need_resize and not orientation_changed
                     ):
+                        # If target equals source path -> nothing to do
+                        if final_out.resolve() == input_path.resolve():
+                            return {
+                                "success": True,
+                                "msg": f"✅ No changes needed: {input_path.name}",
+                                "resized": False,
+                                "converted_to_jpeg": False,
+                                "old_size": old_size,
+                                "new_size": new_size,
+                                "output": str(final_out),
+                            }
+                        # Else, only extension/path change is needed -> defer filesystem rename
+                        pending_rename = True
+
+                    if not pending_rename:
+                        # Handle transparency & modes
+                        if img.mode == "P":
+                            if "transparency" in img.info:
+                                img = img.convert("RGBA")
+                            else:
+                                img = img.convert("RGB")
+                        if img.mode in ("RGBA", "LA"):
+                            alpha = img.getchannel("A")
+                            background = Image.new("RGB", img.size, (255, 255, 255))
+                            img = Image.composite(img.convert("RGB"), background, alpha)
+                        elif img.mode not in ("RGB", "L"):
+                            img = img.convert("RGB")
+
+                        # JPEG save settings
+                        save_kwargs: Dict[str, Any] = {
+                            "format": "JPEG",
+                            "quality": max(1, min(95, int(jpg_quality))),
+                            "optimize": True,
+                            "progressive": True,
+                        }
+
+                        if orig_icc:
+                            save_kwargs["icc_profile"] = orig_icc
+
+                        if orig_exif and _ORIENTATION_TAG is not None:
+                            try:
+                                orig_exif[_ORIENTATION_TAG] = 1
+                                save_kwargs["exif"] = orig_exif.tobytes()
+                            except Exception:
+                                pass
+
+                        img.save(final_out, **save_kwargs)
+
+                # If only rename is pending (JPEG→JPEG with extension change), move the file and return
+                if pending_rename:
+                    try:
+                        final_out.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(input_path), str(final_out))
+                    except Exception as e:
                         return {
-                            "success": True,
-                            "msg": f"✅ No changes needed: {input_path.name}",
+                            "success": False,
+                            "msg": f"❌ Image rename failed: {input_path.name} — {e}",
                             "resized": False,
                             "converted_to_jpeg": False,
                             "old_size": old_size,
                             "new_size": new_size,
-                            "output": str(final_out),
+                            "output": None,
                         }
-
-                    # Handle transparency by compositing on a white background before JPEG save
-                    if img.mode in ("RGBA", "LA"):
-                        alpha = img.getchannel("A")
-                        background = Image.new("RGB", img.size, (255, 255, 255))
-                        img = Image.composite(img.convert("RGB"), background, alpha)
-                    elif img.mode not in ("RGB", "L"):
-                        img = img.convert("RGB")
-
-                    save_kwargs: Dict[str, Any] = {
-                        "format": "JPEG",
-                        "quality": jpg_quality,
-                        "optimize": True,
-                        "progressive": True,
+                    return {
+                        "success": True,
+                        "msg": f"✅ Renamed to .jpg: {final_out.name}",
+                        "resized": False,
+                        "converted_to_jpeg": False,
+                        "old_size": old_size,
+                        "new_size": new_size,
+                        "output": str(final_out),
                     }
 
-                    icc = img.info.get("icc_profile")
-                    if icc:
-                        save_kwargs["icc_profile"] = icc
-
-                    exif_after = img.getexif()
-                    if exif_after and len(exif_after.items()) > 0 and _ORIENTATION_TAG is not None:
-                        exif_after[_ORIENTATION_TAG] = 1
-                        try:
-                            save_kwargs["exif"] = exif_after.tobytes()
-                        except Exception:
-                            pass
-
-                    img.save(final_out, **save_kwargs)
-
+                # If we converted from non-JPEG to JPEG and wrote to a new file, delete original
                 converted = not is_jpeg_in
                 if converted and input_path.exists():
                     try:
