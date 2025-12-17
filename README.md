@@ -1,7 +1,7 @@
 # InoPyUtils
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
-[![Version](https://img.shields.io/badge/version-1.3.8-green)](https://pypi.org/project/inopyutils/)
+[![Version](https://img.shields.io/badge/version-1.5.2-green)](https://pypi.org/project/inopyutils/)
 [![License](https://img.shields.io/badge/license-MPL--2.0-orange)](LICENSE)
 [![Development Status](https://img.shields.io/badge/status-beta-yellow)](https://pypi.org/project/inopyutils/)
 
@@ -139,8 +139,8 @@ async def main():
         timeout_total=30.0,
         retries=3,
         backoff_factor=0.7,
-        default_headers={"User-Agent": "InoPyUtils/1.3.4"},
-    )
+        default_headers={"User-Agent": "InoPyUtils/1.5.2"},
+        )
 
     # Simple GET returning JSON
     resp = await client.get("/users/42", json=True)
@@ -318,6 +318,140 @@ async def main():
 
 asyncio.run(main())
 ```
+
+---
+
+### 🖼️ Thumbnail Generation (`InoThumbnailHelper`)
+Create square thumbnails from images with optional center-crop or smart blurred background padding. Always outputs JPEG files with a consistent naming scheme.
+
+Features:
+- Square thumbnails at multiple sizes in one call
+- Crop-to-square or pad with blurred background (no black bars)
+- Metadata stripped; outputs clean, optimized JPEGs
+
+```python
+from pathlib import Path
+from inopyutils import InoThumbnailHelper
+
+# Synchronous API
+out_files = InoThumbnailHelper.image_generate_square_thumbnails(
+    image_path=Path("tests/thumbnail_helper/assets/sample.jpg"),
+    output_dir=Path("tests/thumbnail_helper/thumbnails"),
+    sizes=(256, 512, 1024),
+    quality=85,
+    crop=False,  # if True: center-crops to square; if False: pads with blurred background
+)
+print(out_files)  # [".../sample_ino_t_256_.jpg", ".../sample_ino_t_512_.jpg", ...]
+
+# Async API
+import asyncio
+
+async def run_async():
+    out_async = await InoThumbnailHelper.image_generate_square_thumbnails_async(
+        image_path=Path("photo.heic"),
+        output_dir=Path("./thumbnails"),
+        sizes=(256, 768),
+        quality=80,
+        crop=True,
+    )
+    print(out_async)
+
+asyncio.run(run_async())
+```
+
+---
+
+### 📷 Photo Metadata Profiles (`InoPhotoMetadata`)
+Lightweight dataclass for holding EXIF-like photo metadata with ready-made profiles.
+
+Features:
+- Pre-filled profiles: iphone, samsung (extendable)
+- Fields for camera/lens info, exposure settings, GPS, and more
+
+```python
+from inopyutils import InoPhotoMetadata
+
+# Start from a profile and override what you need
+meta = InoPhotoMetadata(profile="iphone")
+meta.iso_speed = 100
+meta.gps_latitude = 37.7749
+meta.gps_longitude = -122.4194
+
+# Use `meta` alongside your own EXIF writing pipeline if needed
+print(meta)
+```
+
+---
+
+### 📊 CSV Utilities (`InoCsvHelper`)
+Async CSV read/write with convenient in-memory helpers for headers, rows, columns, and sorting.
+
+Features:
+- Async read/write using aiofiles
+- Stable header inference and ordered output
+- Utilities to access rows/columns and sort by multiple keys
+
+```python
+import asyncio
+from inopyutils import InoCsvHelper
+
+rows = [
+    {"id": 2, "name": "Bob"},
+    {"id": 1, "name": "Alice"},
+]
+
+async def main():
+    # Save CSV
+    res = await InoCsvHelper.save_csv_to_file_async(rows, "people.csv")
+    assert res["success"], res
+
+    # Read CSV
+    r2 = await InoCsvHelper.read_csv_from_file_async("people.csv")
+    print(r2["data"]["headers"], len(r2["data"]["rows"]))
+
+    # In-memory utilities
+    headers = InoCsvHelper.get_headers(rows)
+    first = InoCsvHelper.get_row(rows, 0)
+    ids = InoCsvHelper.get_column(rows, "id")
+    sorted_rows = InoCsvHelper.sort_rows(rows, by=["name", "id"])  # multi-key sort
+
+asyncio.run(main())
+```
+
+---
+
+### 🍃 MongoDB Helper (`InoMongoHelper`)
+Typed, high-level async helper around Motor for common MongoDB operations. Initialize once, use everywhere.
+
+```python
+import asyncio
+from inopyutils import InoMongoHelper
+
+mongo = InoMongoHelper()
+
+async def main():
+    await mongo.connect(
+        uri="mongodb://localhost:27017",
+        db_name="mydb",
+        serverSelectionTimeoutMS=5_000,
+        check_connection=True,
+    )
+
+    # CRUD examples
+    user_id = await mongo.insert_one("users", {"name": "Ann"})
+    user = await mongo.find_one("users", {"_id": user_id})
+    await mongo.update_one("users", {"_id": user_id}, {"$set": {"name": "Anna"}})
+    await mongo.delete_one("users", {"_id": user_id})
+
+    await mongo.close()
+
+asyncio.run(main())
+```
+
+Key features:
+- Safe connection lifecycle (connect/close), optional startup ping
+- Automatic ObjectId <-> str conversion convenience
+- Common operations: find, insert, update, delete, aggregate, indexes
 
 ---
 
