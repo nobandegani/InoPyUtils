@@ -11,45 +11,9 @@ from pillow_heif import register_heif_opener
 import cv2
 import shutil
 
+from .metadata_meida_helper import PhotoMetadata
+
 register_heif_opener()
-
-
-@dataclass
-class PhotoMetadata:
-    # Camera category can be stored in ImageDescription
-    camera_category: Optional[str] = None
-    camera_maker: Optional[str] = None
-    camera_model: Optional[str] = None
-
-    # Core exposure fields
-    f_stop: Optional[Union[str, int, float]] = None            # EXIF FNumber
-    exposure_time: Optional[Union[str, int, float]] = None     # EXIF ExposureTime
-    iso_speed: Optional[Union[int, str]] = None                # EXIF ISOSpeedRatings (int)
-    exposure_bias: Optional[Union[str, int, float]] = None     # EXIF ExposureBiasValue
-    focal_length: Optional[Union[str, int, float]] = None      # EXIF FocalLength
-    max_aperture: Optional[Union[str, int, float]] = None      # EXIF MaxApertureValue
-    metering_mode: Optional[Union[int, str]] = None            # EXIF MeteringMode (enum int)
-    subject_distance: Optional[Union[str, int, float]] = None  # EXIF SubjectDistance
-    flash_mode: Optional[Union[int, str]] = None               # EXIF Flash (bitmask/int)
-    flash_energy: Optional[Union[str, int, float]] = None      # EXIF FlashEnergy
-    focal_length_35mm: Optional[Union[int, str]] = None        # EXIF FocalLengthIn35mmFilm
-
-    # Advanced
-    lens_maker: Optional[str] = None
-    lens_model: Optional[str] = None
-    flash_maker: Optional[str] = None  # Not standard; will be placed in UserComment
-    flash_model: Optional[str] = None  # Not standard; will be placed in UserComment
-    camera_serial_number: Optional[str] = None                 # EXIF BodySerialNumber
-    contrast: Optional[Union[int, str]] = None                 # EXIF Contrast (enum int)
-    brightness: Optional[Union[str, int, float]] = None        # EXIF BrightnessValue
-    light_source: Optional[Union[int, str]] = None             # EXIF LightSource (enum int)
-    exposure_program: Optional[Union[int, str]] = None         # EXIF ExposureProgram (enum int)
-    saturation: Optional[Union[int, str]] = None               # EXIF Saturation (enum int)
-    sharpness: Optional[Union[int, str]] = None                # EXIF Sharpness (enum int)
-    white_balance: Optional[Union[int, str]] = None            # EXIF WhiteBalance (enum int)
-    photometric_interpretation: Optional[Union[int, str]] = None  # EXIF PhotometricInterpretation
-    digital_zoom: Optional[Union[str, int, float]] = None      # EXIF DigitalZoomRatio
-    exif_version: Optional[Union[str, bytes, int]] = None      # EXIF ExifVersion e.g., b"0231"
 
 class InoMediaHelper:
     @staticmethod
@@ -307,6 +271,71 @@ class InoMediaHelper:
                         skipped["Flash maker/model"] = "No standard EXIF tag; skipped"
                 except Exception as e:
                     skipped["UserComment"] = f"Failed to set: {e}"
+
+            # GPS data (Latitude, Longitude, Altitude)
+            try:
+                gps_info_tag = _TAG_BY_NAME.get("GPSInfo")
+                if gps_info_tag is not None and (meta.gps_latitude is not None or meta.gps_longitude is not None or meta.gps_altitude is not None):
+                    # Respect overwrite flag
+                    if not overwrite and exif.get(gps_info_tag):
+                        skipped["GPSInfo"] = "Existing value retained"
+                    else:
+                        # Build GPS IFD dict
+                        # Pillow expects a dict with numeric GPS tag IDs
+                        gps_ifd: Dict[int, Any] = {}
+                        _GPS_TAG_BY_NAME: Dict[str, int] = {v: k for k, v in ExifTags.GPSTAGS.items()}
+
+                        def _parse_float(v: Any) -> Optional[float]:
+                            if v is None:
+                                return None
+                            try:
+                                if isinstance(v, (int, float)):
+                                    return float(v)
+                                s = str(v).strip()
+                                return float(s)
+                            except Exception:
+                                return None
+
+                        def _deg_to_dms_rational(deg_val: float) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
+                            deg = abs(deg_val)
+                            d = int(deg)
+                            m_float = (deg - d) * 60.0
+                            m = int(m_float)
+                            s = (m_float - m) * 60.0
+                            # Use denominator 10000 for seconds for better precision
+                            d_r = (d, 1)
+                            m_r = (m, 1)
+                            from fractions import Fraction as _F
+                            s_f = _F(s).limit_denominator(10000)
+                            s_r = (s_f.numerator, s_f.denominator)
+                            return (d_r, m_r, s_r)
+
+                        lat = _parse_float(meta.gps_latitude)
+                        lon = _parse_float(meta.gps_longitude)
+                        alt = _parse_float(meta.gps_altitude)
+
+                        if lat is not None:
+                            gps_ifd[_GPS_TAG_BY_NAME["GPSLatitudeRef"]] = "N" if lat >= 0 else "S"
+                            gps_ifd[_GPS_TAG_BY_NAME["GPSLatitude"]] = _deg_to_dms_rational(lat)
+                            applied["GPSLatitude"] = lat
+                        if lon is not None:
+                            gps_ifd[_GPS_TAG_BY_NAME["GPSLongitudeRef"]] = "E" if lon >= 0 else "W"
+                            gps_ifd[_GPS_TAG_BY_NAME["GPSLongitude"]] = _deg_to_dms_rational(lon)
+                            applied["GPSLongitude"] = lon
+                        if alt is not None:
+                            gps_ifd[_GPS_TAG_BY_NAME["GPSAltitudeRef"]] = 0 if alt >= 0 else 1
+                            alt_abs = abs(alt)
+                            a_f = Fraction(alt_abs).limit_denominator(1000)
+                            gps_ifd[_GPS_TAG_BY_NAME["GPSAltitude"]] = (a_f.numerator, a_f.denominator)
+                            applied["GPSAltitude"] = alt
+
+                        # Only set if we added something
+                        if gps_ifd:
+                            exif[gps_info_tag] = gps_ifd
+                elif gps_info_tag is None and (meta.gps_latitude is not None or meta.gps_longitude is not None or meta.gps_altitude is not None):
+                    skipped["GPSInfo"] = "No EXIF GPSInfo tag available"
+            except Exception as e:
+                skipped["GPSInfo"] = f"Failed to set: {e}"
 
             return exif, applied, skipped
 
