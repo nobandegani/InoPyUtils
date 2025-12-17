@@ -10,7 +10,6 @@ except Exception:  # pragma: no cover - import error surfaced at runtime
     ImageOps = None
     ImageFilter = None
 
-
 class InoThumbnailHelper:
     """Helper for generating square thumbnails at multiple sizes.
 
