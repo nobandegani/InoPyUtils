@@ -1,4 +1,5 @@
-from .media_helper import InoMediaHelper, PhotoMetadata
+from .media_helper import InoMediaHelper
+from .metadata_meida_helper import PhotoMetadata
 from .config_helper import InoConfigHelper
 from .file_helper import InoFileHelper
 from .log_helper import InoLogHelper, LogType
