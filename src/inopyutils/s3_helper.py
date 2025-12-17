@@ -137,10 +137,12 @@ class InoS3Helper:
             }
         return None
 
-    def _normalize_key(self, key: str) -> str:
-        """Normalize S3 key: backslashes to slashes, strip leading slash, collapse doubles."""
+    def _normalize_key(self, key: Optional[str]) -> Optional[str]:
+        """Normalize S3 key: backslashes to slashes, strip leading slash, collapse doubles.
+        Accepts Optional[str] and returns Optional[str] for convenience; returns None unchanged.
+        """
         if key is None:
-            return key
+            return None
         k = key.replace('\\', '/').lstrip('/')
         while '//' in k:
             k = k.replace('//', '/')
@@ -168,7 +170,17 @@ class InoS3Helper:
                 result = await operation()
                 if result.get("success", False):
                     return result
-                # If operation returns unsuccessful result, don't retry
+                # Honor explicit retryable flag from the operation result
+                if result.get('retryable'):
+                    if attempt < self.retries:
+                        wait_time = (2 ** attempt) + random.uniform(0, 1)
+                        logging.warning(f"{operation_name} attempt {attempt + 1} returned retryable failure, retrying in {wait_time:.2f}s: {result}")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        # Out of attempts; return last result
+                        return result
+                # If operation returns unsuccessful result without retryable flag, don't retry
                 return result
             except (FileNotFoundError, NoCredentialsError, ValueError) as e:
                 error_msg = f"❌ {operation_name} failed with non-retryable error: {str(e)}"
@@ -476,7 +488,9 @@ class InoS3Helper:
             self,
             prefix: str = "",
             bucket_name: Optional[str] = None,
-            max_keys: int = 1000
+            max_keys: int = 1000,
+            recursive: bool = True,
+            delimiter: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         List objects in S3 bucket
@@ -487,13 +501,13 @@ class InoS3Helper:
             max_keys: Maximum number of objects to return
 
         Returns:
-            Dict with "success", "msg", "objects", "count", and optional "error_code"
+            Dict with "success", "msg", "objects", "count", and optional "common_prefixes" and "error_code"
         """
         err = self._validate_bucket(bucket_name)
         if err:
             return err | {"objects": [], "count": 0}
         bucket = bucket_name or self.bucket_name
-        norm_prefix = self._normalize_key(prefix)
+        norm_prefix = self._normalize_key(prefix) or ""
 
         # Input validation
         if max_keys <= 0:
@@ -508,12 +522,22 @@ class InoS3Helper:
         async def _list_operation() -> Dict[str, Any]:
             async with self.session.client('s3', endpoint_url=self.endpoint_url, config=self.config) as s3:
                 all_objects = []
+                common_prefixes_accum = []
                 token = None
                 while True:
-                    params = {"Bucket": bucket, "Prefix": norm_prefix, "MaxKeys": 1000}
+                    params: Dict[str, Any] = {"Bucket": bucket, "Prefix": norm_prefix, "MaxKeys": 1000}
+                    if not recursive:
+                        params["Delimiter"] = delimiter or '/'
                     if token:
                         params["ContinuationToken"] = token
                     resp = await s3.list_objects_v2(**params)
+                    # collect prefixes if non-recursive
+                    if not recursive:
+                        cps = resp.get('CommonPrefixes') or []
+                        for cp in cps:
+                            p = cp.get('Prefix')
+                            if p is not None:
+                                common_prefixes_accum.append(p)
                     for obj in resp.get('Contents', []) or []:
                         # skip folder markers
                         if obj.get('Key', '').endswith('/'):
@@ -532,7 +556,7 @@ class InoS3Helper:
                 out = all_objects[:max_keys]
                 success_msg = f"✅ Found {len(out)} objects in s3://{bucket} with prefix '{norm_prefix}'"
                 logging.info(success_msg)
-                return {
+                result: Dict[str, Any] = {
                     "success": True,
                     "msg": success_msg,
                     "objects": out,
@@ -540,6 +564,9 @@ class InoS3Helper:
                     "bucket": bucket,
                     "prefix": norm_prefix
                 }
+                if not recursive:
+                    result["common_prefixes"] = common_prefixes_accum
+                return result
 
         return await self._retry_operation(
             _list_operation,
@@ -842,7 +869,8 @@ class InoS3Helper:
             local_folder_path: str,
             bucket_name: Optional[str] = None,
             max_concurrent: int = 5,
-            verify: bool = False
+            verify: bool = False,
+            extra_args_provider: Optional[Callable[[str], Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Upload an entire folder to S3, preserving directory structure
@@ -937,7 +965,16 @@ class InoS3Helper:
                         try:
                             # Infer content type
                             guess, _ = mimetypes.guess_type(file_info['local_path'])
-                            extra_args = {'ContentType': guess} if guess else {}
+                            # Start with provider-supplied args (if any) so they can override guesses
+                            provider_args: Dict[str, Any] = {}
+                            if extra_args_provider:
+                                try:
+                                    provider_args = extra_args_provider(file_info['relative_path']) or {}
+                                except Exception:
+                                    provider_args = {}
+                            extra_args: Dict[str, Any] = dict(provider_args)
+                            if 'ContentType' not in extra_args and guess:
+                                extra_args['ContentType'] = guess
                             await s3.upload_file(
                                 file_info['local_path'],
                                 bucket,
@@ -1051,7 +1088,7 @@ class InoS3Helper:
         if err:
             return {**err, "exists": False}
         bucket = bucket_name or self.bucket_name
-        norm_key = self._normalize_key(s3_key)
+        norm_key = self._normalize_key(s3_key) or ""
 
         async def _exists_operation() -> Dict[str, Any]:
             try:
@@ -1091,7 +1128,8 @@ class InoS3Helper:
             expires_in: int = 3600,
             as_attachment: bool = False,
             filename: Optional[str] = None,
-            response_content_type: Optional[str] = None
+            response_content_type: Optional[str] = None,
+            content_disposition: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Generate a direct (pre-signed) download link for an S3 object.
@@ -1142,7 +1180,9 @@ class InoS3Helper:
                     'Key': norm_key,
                 }
                 # Response header overrides
-                if as_attachment and use_filename:
+                if content_disposition:
+                    params['ResponseContentDisposition'] = content_disposition
+                elif as_attachment and use_filename:
                     # RFC 5987 UTF-8 filename
                     params['ResponseContentDisposition'] = f"attachment; filename*=UTF-8''{quote(use_filename)}"
                 if chosen_resp_content_type:
@@ -1178,7 +1218,8 @@ class InoS3Helper:
             self,
             s3_folder_key: str,
             local_folder_path: str,
-            bucket_name: Optional[str] = None
+            bucket_name: Optional[str] = None,
+            fail_fast: bool = False
     ) -> Dict[str, Any]:
         """
         Verify that the files in a local folder and the files in an S3 folder (prefix) are in sync.
@@ -1257,6 +1298,28 @@ class InoS3Helper:
             missing_in_remote = sorted(list(local_set - remote_set))
             missing_in_local = sorted(list(remote_set - local_set))
 
+            if fail_fast and (missing_in_remote or missing_in_local):
+                summary_parts = []
+                if missing_in_remote:
+                    summary_parts.append(f"{len(missing_in_remote)} missing in remote")
+                if missing_in_local:
+                    summary_parts.append(f"{len(missing_in_local)} missing in local")
+                summary = ", ".join(summary_parts)
+                return {
+                    'success': False,
+                    'msg': f"❌ Verification failed: {summary}",
+                    'summary': summary,
+                    'bucket': bucket,
+                    's3_folder_key': s3_folder_key,
+                    'local_folder_path': local_folder_path,
+                    'total_local_files': len(local_set),
+                    'total_remote_files': len(remote_set),
+                    'matched_files': 0,
+                    'missing_in_remote': missing_in_remote,
+                    'missing_in_local': missing_in_local,
+                    'size_mismatches': []
+                }
+
             # Size mismatches for files present on both sides
             size_mismatches = []
             for rel in sorted(local_set & remote_set):
@@ -1268,6 +1331,8 @@ class InoS3Helper:
                         'local_size': lsize,
                         'remote_size': rsize
                     })
+                    if fail_fast:
+                        break
 
             success = len(missing_in_remote) == 0 and len(missing_in_local) == 0 and len(size_mismatches) == 0
 
@@ -1361,7 +1426,8 @@ class InoS3Helper:
             local_file_path: str,
             s3_key: str,
             bucket_name: Optional[str] = None,
-            use_md5: bool = False
+            use_md5: bool = False,
+            use_sha256: bool = False
     ) -> Dict[str, Any]:
         """
         Verify a single local file against a cloud (S3) object.
@@ -1433,7 +1499,7 @@ class InoS3Helper:
 
                     sha256_checked = False
                     sha256_match: Optional[bool] = None
-                    if remote_sha256_b64:
+                    if use_sha256 and remote_sha256_b64:
                         import hashlib, base64
                         sha256_checked = True
                         # Compute local sha256 streaming
