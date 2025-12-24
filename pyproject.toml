@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inopyutils"
-version = "1.5.3"
+version = "1.5.4"
 authors = [
     { name = "Inoland", email = "contact@inoland.net" },
 ]
@@ -24,7 +24,6 @@ classifiers = [
 dependencies = [
     "pillow>=12.0.0",
     "pillow_heif>=1.1.1",
-    "opencv-python>=4.12.0.88",
     "inocloudreve>=0.2.6",
     "aioboto3>=15.5.0",
     "aiofiles>=25.1.0",
