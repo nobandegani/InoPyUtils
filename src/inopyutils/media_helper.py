@@ -160,21 +160,14 @@ class InoMediaHelper:
                     if final_out.suffix.lower() != ".jpg":
                         final_out = final_out.with_suffix(".jpg")
                 else:
-                    final_out = None  # decide after opening
+                    final_out = input_path.with_suffix(".jpg")
+
+                final_out.parent.mkdir(parents=True, exist_ok=True)
+
+                is_jpg_in = input_path.suffix.lower() == ".jpg"
 
                 pending_rename = False
                 with Image.open(input_path) as img:
-                    input_format = (img.format or "").upper()
-                    is_jpeg_in = input_format == "JPEG"
-
-                    # Decide final_out now if not provided
-                    if final_out is None:
-                        # Always target .jpg extension as requested
-                        final_out = input_path.with_suffix(".jpg")
-
-                    # Prepare output folder
-                    final_out.parent.mkdir(parents=True, exist_ok=True)
-
                     # Capture original metadata early
                     orig_exif = img.getexif()
                     orig_icc = img.info.get("icc_profile")
@@ -200,7 +193,7 @@ class InoMediaHelper:
 
                     # If input already JPEG and no pixel changes are required
                     if (
-                        is_jpeg_in and not need_resize and not orientation_changed
+                        is_jpg_in and not need_resize and not orientation_changed
                     ):
                         # If target equals source path -> nothing to do
                         if final_out.resolve() == input_path.resolve():
@@ -275,27 +268,24 @@ class InoMediaHelper:
                         "output": str(final_out),
                     }
 
-                # If we converted from non-JPEG to JPEG and wrote to a new file, delete original
-                converted = not is_jpeg_in
-                if converted and input_path.exists():
-                    try:
-                        input_path.unlink()
-                    except Exception as e:
-                        return {
-                            "success": False,
-                            "msg": f"❌ Image validation failed: {input_path.name} — {e}",
-                            "resized": None,
-                            "converted_to_jpeg": None,
-                            "old_size": None,
-                            "new_size": None,
-                            "output": None,
-                        }
+                try:
+                    input_path.unlink()
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "msg": f"❌ Image validation failed: {input_path.name} — {e}",
+                        "resized": None,
+                        "converted_to_jpeg": None,
+                        "old_size": None,
+                        "new_size": None,
+                        "output": None,
+                    }
 
                 return {
                     "success": True,
                     "msg": f"✅ Validated {input_path.name}",
                     "resized": need_resize,
-                    "converted_to_jpeg": converted,
+                    "converted_to_jpeg": True,
                     "old_size": old_size,
                     "new_size": new_size,
                     "output": str(final_out),
