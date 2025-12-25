@@ -8,7 +8,7 @@ from pillow_heif import register_heif_opener
 
 import shutil
 
-from src.inopyutils import ino_err
+from .util_helper import ino_err
 
 register_heif_opener()
 
