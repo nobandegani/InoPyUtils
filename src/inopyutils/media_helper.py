@@ -6,8 +6,9 @@ from PIL.Image import Resampling
 
 from pillow_heif import register_heif_opener
 
-import cv2
 import shutil
+
+from src.inopyutils import ino_err
 
 register_heif_opener()
 
@@ -315,39 +316,8 @@ class InoMediaHelper:
 
     @staticmethod
     def validate_video_res_fps(input_path: Path, max_res: int = 2560, max_fps: int = 30) -> dict:
-        cap = cv2.VideoCapture(str(input_path))
-        if not cap.isOpened():
-            return {
-                "Result": False,
-                "Message": f"OpenCV failed to open {input_path.name}",
-            }
-
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        cap.release()
-
-        is_res_too_high = width > max_res or height > max_res
-        is_fps_too_high = fps > max_fps
-        if is_res_too_high:
-            return {
-                "Result": True,
-                "Message": f"Video res is too high: {input_path.name} -> {width}x{height}",
-            }
-        elif is_fps_too_high:
-            return {
-                "Result": True,
-                "Message": f"Video fps is too high: {input_path.name} -> {fps}",
-            }
-        else:
-            return {
-                "Result": False,
-                "Message": f"Video {input_path.name} have a valid res and fps",
-            }
+        return ino_err("validate fps deprecated, ")
 
     @staticmethod
     def get_video_fps(input_path: Path) -> float:
-        cap = cv2.VideoCapture(str(input_path))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        cap.release()
-        return fps
+        return 0
