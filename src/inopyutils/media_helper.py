@@ -164,80 +164,83 @@ class InoMediaHelper:
 
             is_jpg_in = input_path.suffix.lower() == ".jpg"
 
-            with Image.open(input_path) as img:
-                orig_exif = img.getexif()
-                orig_icc = img.info.get("icc_profile")
-                orig_orientation = (
-                    orig_exif.get(_ORIENTATION_TAG, 1)
-                    if (orig_exif and _ORIENTATION_TAG is not None)
-                    else 1
-                )
+            img = Image.open(input_path)
 
-                img = ImageOps.exif_transpose(img)
-                orientation_changed = orig_orientation != 1
+            orig_exif = img.getexif()
+            orig_icc = img.info.get("icc_profile")
+            orig_orientation = (
+                orig_exif.get(_ORIENTATION_TAG, 1)
+                if (orig_exif and _ORIENTATION_TAG is not None)
+                else 1
+            )
 
-                old_size: Tuple[int, int] = (img.width, img.height)
-                need_resize = img.width > max_res or img.height > max_res
-                if need_resize:
-                    scale = min(max_res / img.width, max_res / img.height)
-                    new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
-                    img = img.resize(new_size, resample=Resampling.LANCZOS)
+            img = ImageOps.exif_transpose(img)
+            orientation_changed = orig_orientation != 1
+
+            old_size: Tuple[int, int] = (img.width, img.height)
+            need_resize = img.width > max_res or img.height > max_res
+            if need_resize:
+                scale = min(max_res / img.width, max_res / img.height)
+                new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+                img = img.resize(new_size, resample=Resampling.LANCZOS)
+            else:
+                new_size = old_size
+
+            if is_jpg_in and not need_resize and not orientation_changed:
+                if final_out.resolve() == input_path.resolve():
+                    return ino_ok(
+                        f"✅ No changes needed: {input_path.name}",
+                        resized=False,
+                        converted=False,
+                        old_size=old_size,
+                        new_size=new_size,
+                        output=str(final_out),
+                    )
                 else:
-                    new_size = old_size
+                    shutil.move(str(input_path), str(final_out))
+                    return ino_ok(
+                        f"✅ No changes needed: {input_path.name}",
+                        resized=False,
+                        converted=False,
+                        old_size=old_size,
+                        new_size=new_size,
+                        output=str(final_out),
+                    )
 
-                if is_jpg_in and not need_resize and not orientation_changed:
-                    if final_out.resolve() == input_path.resolve():
-                        return ino_ok(
-                            f"✅ No changes needed: {input_path.name}",
-                            resized=False,
-                            converted=False,
-                            old_size=old_size,
-                            new_size=new_size,
-                            output=str(final_out),
-                        )
-                    else:
-                        shutil.move(str(input_path), str(final_out))
-                        return ino_ok(
-                            f"✅ No changes needed: {input_path.name}",
-                            resized=False,
-                            converted=False,
-                            old_size=old_size,
-                            new_size=new_size,
-                            output=str(final_out),
-                        )
-
-                if img.mode == "P":
-                    if "transparency" in img.info:
-                        img = img.convert("RGBA")
-                    else:
-                        img = img.convert("RGB")
-                if img.mode in ("RGBA", "LA"):
-                    alpha = img.getchannel("A")
-                    background = Image.new("RGB", img.size, (255, 255, 255))
-                    img = Image.composite(img.convert("RGB"), background, alpha)
-                elif img.mode not in ("RGB", "L"):
+            if img.mode == "P":
+                if "transparency" in img.info:
+                    img = img.convert("RGBA")
+                else:
                     img = img.convert("RGB")
+            if img.mode in ("RGBA", "LA"):
+                alpha = img.getchannel("A")
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                img = Image.composite(img.convert("RGB"), background, alpha)
+            elif img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
 
-                save_kwargs: Dict[str, Any] = {
-                    "format": "JPEG",
-                    "quality": max(1, min(95, int(jpg_quality))),
-                    "optimize": True,
-                    "progressive": True,
-                }
+            save_kwargs: Dict[str, Any] = {
+                "format": "JPEG",
+                "quality": max(1, min(95, int(jpg_quality))),
+                "optimize": True,
+                "progressive": True,
+            }
 
-                if orig_icc:
-                    save_kwargs["icc_profile"] = orig_icc
+            if orig_icc:
+                save_kwargs["icc_profile"] = orig_icc
 
-                if orig_exif and _ORIENTATION_TAG is not None:
-                    try:
-                        orig_exif[_ORIENTATION_TAG] = 1
-                        save_kwargs["exif"] = orig_exif.tobytes()
-                    except Exception:
-                        pass
+            if orig_exif and _ORIENTATION_TAG is not None:
+                try:
+                    orig_exif[_ORIENTATION_TAG] = 1
+                    save_kwargs["exif"] = orig_exif.tobytes()
+                except Exception:
+                    pass
 
-                img.save(final_out, **save_kwargs)
+            img.save(final_out, **save_kwargs)
+            img.close()
 
-            input_path.unlink()
+            if final_out.resolve() != input_path.resolve():
+                input_path.unlink()
 
             return ino_ok(
                 f"✅ Validated {input_path.name}",
