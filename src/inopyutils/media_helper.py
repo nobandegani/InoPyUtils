@@ -8,7 +8,7 @@ from pillow_heif import register_heif_opener
 
 import shutil
 
-from .util_helper import ino_err
+from .util_helper import ino_err, ino_is_err, ino_ok
 
 register_heif_opener()
 
@@ -153,156 +153,113 @@ class InoMediaHelper:
         _ORIENTATION_TAG = {v: k for k, v in ExifTags.TAGS.items()}.get("Orientation")
 
         def _work() -> Dict[str, Any]:
-            try:
-                # Ensure output has .jpg extension when provided
-                if output_path is not None:
-                    final_out = Path(output_path)
-                    if final_out.suffix.lower() != ".jpg":
-                        final_out = final_out.with_suffix(".jpg")
+            if output_path is not None:
+                final_out = Path(output_path)
+                if final_out.suffix.lower() != ".jpg":
+                    final_out = final_out.with_suffix(".jpg")
+            else:
+                final_out = input_path.with_suffix(".jpg")
+
+            final_out.parent.mkdir(parents=True, exist_ok=True)
+
+            is_jpg_in = input_path.suffix.lower() == ".jpg"
+
+            with Image.open(input_path) as img:
+                orig_exif = img.getexif()
+                orig_icc = img.info.get("icc_profile")
+                orig_orientation = (
+                    orig_exif.get(_ORIENTATION_TAG, 1)
+                    if (orig_exif and _ORIENTATION_TAG is not None)
+                    else 1
+                )
+
+                img = ImageOps.exif_transpose(img)
+                orientation_changed = orig_orientation != 1
+
+                old_size: Tuple[int, int] = (img.width, img.height)
+                need_resize = img.width > max_res or img.height > max_res
+                if need_resize:
+                    scale = min(max_res / img.width, max_res / img.height)
+                    new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+                    img = img.resize(new_size, resample=Resampling.LANCZOS)
                 else:
-                    final_out = input_path.with_suffix(".jpg")
+                    new_size = old_size
 
-                final_out.parent.mkdir(parents=True, exist_ok=True)
-
-                is_jpg_in = input_path.suffix.lower() == ".jpg"
-
-                pending_rename = False
-                with Image.open(input_path) as img:
-                    # Capture original metadata early
-                    orig_exif = img.getexif()
-                    orig_icc = img.info.get("icc_profile")
-                    orig_orientation = (
-                        orig_exif.get(_ORIENTATION_TAG, 1)
-                        if (orig_exif and _ORIENTATION_TAG is not None)
-                        else 1
-                    )
-
-                    # Fix orientation in pixels
-                    img = ImageOps.exif_transpose(img)
-                    orientation_changed = orig_orientation != 1
-
-                    # Compute resizing
-                    old_size: Tuple[int, int] = (img.width, img.height)
-                    need_resize = img.width > max_res or img.height > max_res
-                    if need_resize:
-                        scale = min(max_res / img.width, max_res / img.height)
-                        new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
-                        img = img.resize(new_size, resample=Resampling.LANCZOS)
+                if is_jpg_in and not need_resize and not orientation_changed:
+                    if final_out.resolve() == input_path.resolve():
+                        return ino_ok(
+                            f"✅ No changes needed: {input_path.name}",
+                            resized=False,
+                            converted=False,
+                            old_size=old_size,
+                            new_size=new_size,
+                            output=str(final_out),
+                        )
                     else:
-                        new_size = old_size
-
-                    # If input already JPEG and no pixel changes are required
-                    if (
-                        is_jpg_in and not need_resize and not orientation_changed
-                    ):
-                        # If target equals source path -> nothing to do
-                        if final_out.resolve() == input_path.resolve():
-                            return {
-                                "success": True,
-                                "msg": f"✅ No changes needed: {input_path.name}",
-                                "resized": False,
-                                "converted_to_jpeg": False,
-                                "old_size": old_size,
-                                "new_size": new_size,
-                                "output": str(final_out),
-                            }
-                        # Else, only extension/path change is needed -> defer filesystem rename
-                        pending_rename = True
-
-                    if not pending_rename:
-                        # Handle transparency & modes
-                        if img.mode == "P":
-                            if "transparency" in img.info:
-                                img = img.convert("RGBA")
-                            else:
-                                img = img.convert("RGB")
-                        if img.mode in ("RGBA", "LA"):
-                            alpha = img.getchannel("A")
-                            background = Image.new("RGB", img.size, (255, 255, 255))
-                            img = Image.composite(img.convert("RGB"), background, alpha)
-                        elif img.mode not in ("RGB", "L"):
-                            img = img.convert("RGB")
-
-                        # JPEG save settings
-                        save_kwargs: Dict[str, Any] = {
-                            "format": "JPEG",
-                            "quality": max(1, min(95, int(jpg_quality))),
-                            "optimize": True,
-                            "progressive": True,
-                        }
-
-                        if orig_icc:
-                            save_kwargs["icc_profile"] = orig_icc
-
-                        if orig_exif and _ORIENTATION_TAG is not None:
-                            try:
-                                orig_exif[_ORIENTATION_TAG] = 1
-                                save_kwargs["exif"] = orig_exif.tobytes()
-                            except Exception:
-                                pass
-
-                        img.save(final_out, **save_kwargs)
-
-                # If only rename is pending (JPEG→JPEG with extension change), move the file and return
-                if pending_rename:
-                    try:
-                        final_out.parent.mkdir(parents=True, exist_ok=True)
                         shutil.move(str(input_path), str(final_out))
-                    except Exception as e:
-                        return {
-                            "success": False,
-                            "msg": f"❌ Image rename failed: {input_path.name} — {e}",
-                            "resized": False,
-                            "converted_to_jpeg": False,
-                            "old_size": old_size,
-                            "new_size": new_size,
-                            "output": None,
-                        }
-                    return {
-                        "success": True,
-                        "msg": f"✅ Renamed to .jpg: {final_out.name}",
-                        "resized": False,
-                        "converted_to_jpeg": False,
-                        "old_size": old_size,
-                        "new_size": new_size,
-                        "output": str(final_out),
-                    }
+                        return ino_ok(
+                            f"✅ No changes needed: {input_path.name}",
+                            resized=False,
+                            converted=False,
+                            old_size=old_size,
+                            new_size=new_size,
+                            output=str(final_out),
+                        )
 
-                try:
-                    input_path.unlink()
-                except Exception as e:
-                    return {
-                        "success": False,
-                        "msg": f"❌ Image validation failed: {input_path.name} — {e}",
-                        "resized": None,
-                        "converted_to_jpeg": None,
-                        "old_size": None,
-                        "new_size": None,
-                        "output": None,
-                    }
+                if img.mode == "P":
+                    if "transparency" in img.info:
+                        img = img.convert("RGBA")
+                    else:
+                        img = img.convert("RGB")
+                if img.mode in ("RGBA", "LA"):
+                    alpha = img.getchannel("A")
+                    background = Image.new("RGB", img.size, (255, 255, 255))
+                    img = Image.composite(img.convert("RGB"), background, alpha)
+                elif img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
 
-                return {
-                    "success": True,
-                    "msg": f"✅ Validated {input_path.name}",
-                    "resized": need_resize,
-                    "converted_to_jpeg": True,
-                    "old_size": old_size,
-                    "new_size": new_size,
-                    "output": str(final_out),
+                save_kwargs: Dict[str, Any] = {
+                    "format": "JPEG",
+                    "quality": max(1, min(95, int(jpg_quality))),
+                    "optimize": True,
+                    "progressive": True,
                 }
 
-            except Exception as e:
-                return {
-                    "success": False,
-                    "msg": f"❌ Image validation failed: {input_path.name} — {e}",
-                    "resized": None,
-                    "converted_to_jpeg": None,
-                    "old_size": None,
-                    "new_size": None,
-                    "output": None,
-                }
+                if orig_icc:
+                    save_kwargs["icc_profile"] = orig_icc
 
-        return await asyncio.to_thread(_work)
+                if orig_exif and _ORIENTATION_TAG is not None:
+                    try:
+                        orig_exif[_ORIENTATION_TAG] = 1
+                        save_kwargs["exif"] = orig_exif.tobytes()
+                    except Exception:
+                        pass
+
+                img.save(final_out, **save_kwargs)
+
+            input_path.unlink()
+
+            return ino_ok(
+                f"✅ Validated {input_path.name}",
+                resized=need_resize,
+                converted=True,
+                old_size=old_size,
+                new_size=new_size,
+                output=str(final_out),
+            )
+
+        try:
+            img_validate = await asyncio.to_thread(_work)
+            return img_validate
+        except Exception as e:
+            return ino_err(
+                f"❌ Validation failed: {e}",
+                resized=False,
+                converted=False,
+                old_size=0,
+                new_size=0,
+                output="",
+            )
 
     @staticmethod
     def validate_video_res_fps(input_path: Path, max_res: int = 2560, max_fps: int = 30) -> dict:
