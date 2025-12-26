@@ -183,4 +183,5 @@ cython_debug/
 tests_hidden/
 tests/*/assets
 tests/*/converted
+tests/*/convert
 tests/*/thumbnails
