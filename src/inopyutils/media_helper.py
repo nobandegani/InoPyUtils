@@ -68,40 +68,26 @@ class InoMediaHelper:
             stdout, stderr = await proc.communicate()
 
             if proc.returncode != 0:
-                return {
-                    "success": False,
-                    "msg": f"❌ Conversion failed ({input_path.name}): {stderr.decode().strip()}",
-                    "original_size": 0,
-                    "converted_size": 0,
-                }
+                return ino_err(f"❌ Conversion failed ({input_path.name}): {stderr.decode().strip()}", original_size = 0, converted_size = 0)
 
             original_size = input_path.stat().st_size // 1024
             converted_size = temp_output.stat().st_size // 1024
 
             if not temp_output.exists():
-                return {
-                    "success": False,
-                    "msg": "Conversion failed, converted file not found",
-                    "original_size": 0,
-                    "converted_size": 0,
-                }
+                return ino_err(f"❌ Conversion failed ({input_path.name}): Converted file not found", original_size = 0, converted_size = 0)
 
             await asyncio.to_thread(input_path.unlink)
             await asyncio.to_thread(shutil.move, str(temp_output), str(output_path))
-            return {
-                "success": True,
-                "msg": f"✅ Converted {input_path.name} ",
-                "original_size": original_size,
-                "converted_size": converted_size,
-            }
+            return ino_ok(f"✅ Converted {input_path.name}", original_size = original_size, converted_size = converted_size)
         except Exception as e:
-            return {
-                "success": False,
-                "msg": f"❌ Video conversion error: {e}",
-                "original_size": 0,
-                "converted_size": 0,
-            }
+            return ino_err(f"❌ Video conversion error: {e}", original_size = 0, converted_size = 0)
 
+    @staticmethod
+    async def video_extract_frame(
+            input_path: Path,
+            output_path: Path,
+    ) -> dict:
+        return ino_err("wip")
 
     @staticmethod
     async def image_convert_ffmpeg(input_path: Path, output_path: Path) -> dict:
@@ -120,22 +106,12 @@ class InoMediaHelper:
             stdout, stderr = await proc.communicate()
 
             if proc.returncode != 0:
-                return {
-                    "success": False,
-                    "msg": f"❌ Conversion failed ({input_path.name}): {stderr.decode().strip()}",
-                }
+                return ino_err(f"❌ Conversion failed ({input_path.name}): {stderr.decode().strip()}")
 
             await asyncio.to_thread(input_path.unlink)
-            return {
-                "success": True,
-                "msg": f"✅ Converted {input_path.name} ",
-            }
+            return ino_ok(f"✅ Converted {input_path.name} ")
         except Exception as e:
-            return {
-                "success": False,
-                "msg": f"❌ Image conversion error: {e}",
-            }
-
+            return ino_err(f"❌ Image conversion error: {e}")
 
     @staticmethod
     async def image_validate_pillow(
