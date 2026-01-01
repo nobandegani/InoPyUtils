@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inopyutils"
-version = "1.5.12"
+version = "1.6.1"
 authors = [
     { name = "Inoland", email = "contact@inoland.net" },
 ]

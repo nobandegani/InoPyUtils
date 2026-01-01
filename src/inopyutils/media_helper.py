@@ -85,9 +85,97 @@ class InoMediaHelper:
     @staticmethod
     async def video_extract_frame(
             input_path: Path,
-            output_path: Path,
+            output_path: Path | None = None,
+            frame_number: int = -1
     ) -> dict:
-        return ino_err("wip")
+        if not input_path.exists():
+            return ino_err(f"❌ Input video not found: {input_path}")
+
+        if output_path is not None:
+            final_out = Path(output_path)
+            if final_out.suffix.lower() != ".jpg":
+                final_out = final_out.with_suffix(".jpg")
+        else:
+            final_out = input_path.with_suffix(".jpg")
+
+        final_out.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            if frame_number == -1:
+                # Extract a frame from the middle of the video.
+                probe_args = [
+                    "ffprobe",
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    str(input_path),
+                ]
+                probe = await asyncio.create_subprocess_exec(
+                    *probe_args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                p_stdout, p_stderr = await probe.communicate()
+                if probe.returncode != 0:
+                    return ino_err(
+                        f"❌ ffprobe failed ({input_path.name}): {p_stderr.decode().strip()}"
+                    )
+
+                dur_str = p_stdout.decode().strip()
+                try:
+                    duration = float(dur_str)
+                except ValueError:
+                    return ino_err(
+                        f"❌ Could not read duration from ffprobe output: {dur_str!r}"
+                    )
+
+                mid_ts = max(duration / 2.0, 0.0)
+
+                args = [
+                    "ffmpeg", "-y",
+                    "-loglevel", "error",
+                    "-ss", f"{mid_ts}",
+                    "-i", str(input_path),
+                    "-frames:v", "1",
+                    "-q:v", "2",
+                    str(final_out),
+                ]
+            else:
+                # Extract an exact frame by index (0-based) using select.
+                args = [
+                    "ffmpeg", "-y",
+                    "-loglevel", "error",
+                    "-i", str(input_path),
+                    "-vf", f"select=eq(n\\,{frame_number})",
+                    "-frames:v", "1",
+                    "-vsync", "vfr",
+                    "-q:v", "2",
+                    str(final_out),
+                ]
+
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+
+            if proc.returncode != 0:
+                return ino_err(
+                    f"❌ Frame extraction failed ({input_path.name}): {stderr.decode().strip()}"
+                )
+
+            if not final_out.exists():
+                return ino_err(
+                    f"❌ Frame extraction failed ({input_path.name}): Output file not found"
+                )
+
+            return ino_ok(
+                f"✅ Extracted frame from {input_path.name}",
+                output_path=str(final_out),
+            )
+        except Exception as e:
+            return ino_err(f"❌ Frame extraction error: {e}")
 
     @staticmethod
     async def image_convert_ffmpeg(input_path: Path, output_path: Path) -> dict:
