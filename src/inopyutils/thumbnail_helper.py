@@ -22,6 +22,7 @@ class InoThumbnailHelper:
         sizes: Iterable[int] = (256, 512, 1024),
         quality: int = 50,
         crop: bool = False,
+        prefix:str = "ino_t"
     ) -> dict:
         """Create 1:1 thumbnails by cropping or padding to square, then resizing.
 
@@ -115,7 +116,7 @@ class InoThumbnailHelper:
                 resized = square.resize((size, size), resample=resample)
 
                 # Always save as JPEG with .jpg extension
-                out_filename = f"{name}_ino_t_{size}_.jpg"
+                out_filename = f"{name}_{prefix}_{size}.jpg"
                 out_path = output_dir / out_filename
 
                 # Ensure RGB for JPEG output
@@ -153,6 +154,7 @@ class InoThumbnailHelper:
         sizes: Iterable[int] = (256, 512, 1024),
         quality: int = 90,
         crop: bool = False,
+        prefix:str = "ino_t"
     ) -> dict:
         """Async wrapper for `image_generate_square_thumbnails`.
 
@@ -167,4 +169,5 @@ class InoThumbnailHelper:
             sizes,
             quality,
             crop,
+            prefix
         )
