@@ -41,13 +41,17 @@ class InoUtilHelper:
     @staticmethod
     def get_date_time_utc_base64(random_token:int = 2) -> str:
         """
-        Generates a unique, base64-encoded timestamp string combined with a random token.
+        Generates a unique, base32-encoded timestamp string combined with a random token.
         The timestamp is based on the current UTC date and time down to milliseconds,
         and the random token adds additional entropy for uniqueness.
         """
         now = datetime.now(timezone.utc)
         ts_str = now.strftime("%Y%m%d%H%M%S") + f"{now.microsecond // 1000:03d}"
+
         n = int(ts_str)
         b = n.to_bytes((n.bit_length() + 7) // 8 or 1, "big")
-        core = base64.urlsafe_b64encode(b).decode("ascii").rstrip("=")
-        return f"{core}-{secrets.token_urlsafe(random_token)}"
+
+        core = base64.b32encode(b).decode("ascii").rstrip("=").lower()
+        token = base64.b32encode(secrets.token_bytes(random_token)).decode("ascii").rstrip("=").lower()
+
+        return f"{core}{token}"
