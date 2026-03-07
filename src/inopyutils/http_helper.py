@@ -25,6 +25,15 @@ def _sanitize_filename(name: str, fallback: str = "download") -> str:
         return fallback
     return candidate
 
+
+def _parse_total_from_content_range(content_range: str) -> Optional[int]:
+    if not content_range or "/" not in content_range:
+        return None
+    total_part = content_range.split("/")[-1].strip()
+    if total_part.isdigit():
+        return int(total_part)
+    return None
+
 class InoHttpHelper:
     """
     Async HTTP helper built on top of aiohttp.
@@ -429,6 +438,7 @@ class InoHttpHelper:
         mkdirs: bool = True,
         verify_size: bool = True,
         filename: Optional[str] = None,
+        connection: int = 1,
     ) -> Dict[str, Any]:
         """
         Stream-download a file to disk without loading it into memory.
@@ -501,6 +511,24 @@ class InoHttpHelper:
             )
 
         attempts = self._retries + 1
+        try:
+            requested_connections = int(connection)
+        except (TypeError, ValueError):
+            requested_connections = 1
+        requested_connections = max(1, min(10, requested_connections))
+
+        range_supported = False
+        range_probe_total_size: Optional[int] = None
+        if requested_connections > 1:
+            range_supported, range_probe_total_size = await self._probe_range_support(
+                full_url,
+                params=params,
+                headers=merged_headers,
+                timeout=timeout,
+                allow_redirects=allow_redirects,
+                auth=auth_obj,
+            )
+
         range_reset_retry_used = False
         last_exc: Optional[BaseException] = None
         attempt = 0
@@ -586,6 +614,8 @@ class InoHttpHelper:
                                     total_size = int(total_part)
                             except Exception:
                                 total_size = None
+                    if total_size is None and range_probe_total_size is not None:
+                        total_size = range_probe_total_size
 
                     # If dest was a directory and no explicit filename, try to derive a better final name now
                     if is_dir_hint and not filename:
@@ -647,17 +677,53 @@ class InoHttpHelper:
                             # Don't fail download because of progress callback
                             pass
 
-                    with open(tmp, mode) as f:
-                        async for chunk in resp.content.iter_chunked(max(1, int(chunk_size))):
-                            if not chunk:
-                                continue
-                            f.write(chunk)
-                            bytes_downloaded += len(chunk)
-                            if progress:
-                                try:
-                                    progress(bytes_downloaded, total_size)
-                                except Exception:
-                                    pass
+                    # Multi-connection download is only used when requested and supported.
+                    if (
+                        requested_connections > 1
+                        and range_supported
+                        and start_offset == 0
+                        and total_size is not None
+                        and total_size > 0
+                    ):
+                        # Abort this probe/download response before starting ranged workers.
+                        # `release()` may drain unread body bytes, which can keep network traffic
+                        # going unnecessarily for large files.
+                        resp.close()
+                        try:
+                            bytes_downloaded = await self._download_multi_connection(
+                                full_url,
+                                tmp=tmp,
+                                total_size=total_size,
+                                connections=requested_connections,
+                                chunk_size=chunk_size,
+                                params=params,
+                                headers=merged_headers,
+                                timeout=timeout,
+                                allow_redirects=allow_redirects,
+                                auth=auth_obj,
+                                progress=progress,
+                            )
+                        except Exception:
+                            # If concurrent range mode fails unexpectedly, fall back to single stream.
+                            try:
+                                tmp.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                            range_supported = False
+                            attempt -= 1
+                            continue
+                    else:
+                        with open(tmp, mode) as f:
+                            async for chunk in resp.content.iter_chunked(max(1, int(chunk_size))):
+                                if not chunk:
+                                    continue
+                                f.write(chunk)
+                                bytes_downloaded += len(chunk)
+                                if progress:
+                                    try:
+                                        progress(bytes_downloaded, total_size)
+                                    except Exception:
+                                        pass
 
                     # Verify size if requested and known
                     if verify_size and total_size is not None and bytes_downloaded != total_size:
@@ -768,6 +834,119 @@ class InoHttpHelper:
             method="GET",
             attempts=attempts,
         )
+
+    async def _probe_range_support(
+        self,
+        url: str,
+        *,
+        params: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+        timeout: Optional[aiohttp.ClientTimeout] = None,
+        allow_redirects: bool = True,
+        auth: Optional[aiohttp.BasicAuth] = None,
+    ) -> Tuple[bool, Optional[int]]:
+        probe_headers = dict(headers or {})
+        probe_headers["Range"] = "bytes=0-0"
+        try:
+            async with self._session.get(
+                url,
+                params=params,
+                headers=probe_headers,
+                timeout=timeout,
+                allow_redirects=allow_redirects,
+                auth=auth,
+            ) as resp:
+                if resp.status == 206:
+                    total = _parse_total_from_content_range(resp.headers.get("Content-Range", ""))
+                    if total is None:
+                        content_length = resp.headers.get("Content-Length")
+                        if content_length and content_length.isdigit():
+                            total = int(content_length)
+                    return True, total
+
+                content_length = resp.headers.get("Content-Length")
+                total = int(content_length) if content_length and content_length.isdigit() else None
+                return False, total
+        except Exception:
+            return False, None
+
+    async def _download_multi_connection(
+        self,
+        url: str,
+        *,
+        tmp: Path,
+        total_size: int,
+        connections: int,
+        chunk_size: int,
+        params: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+        timeout: Optional[aiohttp.ClientTimeout] = None,
+        allow_redirects: bool = True,
+        auth: Optional[aiohttp.BasicAuth] = None,
+        progress: Optional[Callable[[int, Optional[int]], Any]] = None,
+    ) -> int:
+        part_count = max(1, min(connections, total_size))
+        base_headers = dict(headers or {})
+
+        with open(tmp, "wb") as f:
+            f.truncate(total_size)
+
+        ranges = []
+        part_size = total_size // part_count
+        cursor = 0
+        for i in range(part_count):
+            start = cursor
+            if i == part_count - 1:
+                end = total_size - 1
+            else:
+                end = start + part_size - 1
+            ranges.append((start, end))
+            cursor = end + 1
+
+        downloaded = 0
+        progress_lock = asyncio.Lock()
+
+        async def _worker(start: int, end: int) -> None:
+            nonlocal downloaded
+            req_headers = dict(base_headers)
+            req_headers["Range"] = f"bytes={start}-{end}"
+            async with self._session.get(
+                url,
+                params=params,
+                headers=req_headers,
+                timeout=timeout,
+                allow_redirects=allow_redirects,
+                auth=auth,
+            ) as part_resp:
+                if part_resp.status != 206:
+                    raise IOError(f"Range request failed with status {part_resp.status}")
+
+                remaining = end - start + 1
+                with open(tmp, "r+b") as f:
+                    f.seek(start)
+                    async for chunk in part_resp.content.iter_chunked(max(1, int(chunk_size))):
+                        if not chunk:
+                            continue
+                        if len(chunk) > remaining:
+                            chunk = chunk[:remaining]
+                        f.write(chunk)
+                        got = len(chunk)
+                        remaining -= got
+                        async with progress_lock:
+                            downloaded += got
+                            if progress:
+                                try:
+                                    progress(downloaded, total_size)
+                                except Exception:
+                                    pass
+                        if remaining <= 0:
+                            break
+
+                if remaining != 0:
+                    raise IOError("Range download ended before expected bytes were received")
+
+        await asyncio.gather(*(_worker(start, end) for start, end in ranges))
+        return downloaded
 
     async def _sleep_backoff(self, attempt: int) -> None:
         delay = self._backoff_factor * (2 ** (attempt - 1))
