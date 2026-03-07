@@ -108,9 +108,11 @@ class InoCivitHelper:
         if verify_local_res["verified"]:
             return ino_ok(
                 f"Download model skipped, model already downloaded and verified",
-                model=model,
-                remote_file=remote_file,
-                remote_files=remote_files
+                local_file_path=local_file_path,
+                local_file_name=local_file_path.name,
+                model_info=model,
+                remote_file_info=remote_file,
+                remote_files_info=remote_files
             )
         else:
             print(verify_local_res["msg"])
@@ -138,7 +140,9 @@ class InoCivitHelper:
 
         return ino_ok(
             f"Download model completed, and file verified",
-            model=model,
-            remote_file=remote_file,
-            remote_files=remote_files
+            local_file_path=local_file_path,
+            local_file_name=local_file_path.name,
+            model_info=model,
+            remote_file_info=remote_file,
+            remote_files_info=remote_files
         )

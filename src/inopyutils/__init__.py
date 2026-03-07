@@ -12,6 +12,7 @@ from .csv_helper import InoCsvHelper
 from .util_helper import InoUtilHelper, ino_ok, ino_err, ino_is_err
 from .mongo_helper import InoMongoHelper
 from .csv_helper import InoCsvHelper
+from .civitai_helper import InoCivitHelper
 
 __all__ = [
     "InoConfigHelper",
@@ -29,6 +30,7 @@ __all__ = [
     "InoUtilHelper",
     "InoMongoHelper",
     "InoCsvHelper",
+    "InoCivitHelper",
     "ino_ok",
     "ino_err",
     "ino_is_err"
