@@ -12,6 +12,19 @@ from urllib.parse import urlparse, unquote
 
 from .util_helper import InoUtilHelper, ino_ok, ino_err
 
+
+def _sanitize_filename(name: str, fallback: str = "download") -> str:
+    """Best-effort filename sanitization for cross-platform file systems."""
+    if not name:
+        return fallback
+    candidate = Path(name).name.strip().strip("\0")
+    candidate = candidate.replace("\\", "_").replace("/", "_")
+    candidate = re.sub(r"[\x00-\x1f<>:\"|?*]", "_", candidate)
+    candidate = candidate.rstrip(". ")
+    if not candidate or candidate in {".", ".."}:
+        return fallback
+    return candidate
+
 class InoHttpHelper:
     """
     Async HTTP helper built on top of aiohttp.
@@ -405,7 +418,7 @@ class InoHttpHelper:
         *,
         params: Optional[Mapping[str, Any]] = None,
         headers: Optional[Mapping[str, str]] = None,
-        chunk_size: int = 1024 * 1024,
+        chunk_size: int = 1024  * 1024,
         overwrite: bool = False,
         resume: bool = True,
         progress: Optional[Callable[[int, Optional[int]], Any]] = None,
@@ -457,16 +470,19 @@ class InoHttpHelper:
 
         # Provisional filename decision before request (enables resume temp file)
         if filename:
-            chosen_name = filename
+            chosen_name = _sanitize_filename(filename)
         elif not is_dir_hint:
-            chosen_name = dest_in.name
+            chosen_name = _sanitize_filename(dest_in.name)
         else:
             # Try to get something from the URL path; fallback to 'download'
             url_name = Path(unquote(urlparse(full_url).path)).name
 
             unique_name = InoUtilHelper.hash_string(str(dest_path))
 
-            chosen_name = url_name if (url_name and "." in url_name and not url_name.startswith(".")) else unique_name
+            chosen_name = _sanitize_filename(
+                url_name if (url_name and "." in url_name and not url_name.startswith(".")) else unique_name,
+                fallback=unique_name,
+            )
 
         dest = base_dir / chosen_name
         tmp = dest.with_suffix(dest.suffix + temp_suffix)
@@ -485,8 +501,11 @@ class InoHttpHelper:
             )
 
         attempts = self._retries + 1
+        range_reset_retry_used = False
         last_exc: Optional[BaseException] = None
-        for attempt in range(1, attempts + 1):
+        attempt = 0
+        while attempt < attempts:
+            attempt += 1
             start_offset = tmp.stat().st_size if resume and tmp.exists() else 0
             # Set Range header if resuming and not already provided
             req_headers = dict(merged_headers)
@@ -505,6 +524,34 @@ class InoHttpHelper:
                     status = resp.status
                     if self._raise_for_status and status >= 400:
                         resp.raise_for_status()
+
+                    if status < 200 or status >= 300:
+                        # If resume offset became invalid (stale .part), drop partial and retry once from zero.
+                        if status == 416 and start_offset > 0 and not range_reset_retry_used:
+                            try:
+                                tmp.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                            range_reset_retry_used = True
+                            attempt -= 1
+                            continue
+
+                        # For errors, do not persist response body to disk.
+                        # Keep retries only for configured transient statuses.
+                        if status in self._retry_for_statuses and attempt < attempts:
+                            await self._sleep_backoff(attempt)
+                            continue
+                        return ino_err(
+                            resp.reason or f"HTTP {status}",
+                            status_code=status,
+                            headers={k: v for k, v in resp.headers.items()},
+                            path="",
+                            bytes="",
+                            filename="",
+                            url=full_url,
+                            method="GET",
+                            attempts=attempt,
+                        )
 
                     # Retry on configured statuses
                     if status in self._retry_for_statuses and attempt < attempts:
@@ -572,6 +619,7 @@ class InoHttpHelper:
                                     ext = guessed
                         if not derived:
                             derived = "download" + (ext or "")
+                        derived = _sanitize_filename(derived)
                         if derived and derived != dest.name:
                             candidate = base_dir / derived
                             if candidate.exists() and not overwrite:
