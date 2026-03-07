@@ -68,6 +68,7 @@ class InoCivitHelper:
             if local_sha.lower() == remote_sha.lower():
                 return ino_ok(f"Download model skipped, model already downloaded and verified", verified=True)
             else:
+                local_file_path.unlink()
                 return ino_ok("file not verified", verified=False)
 
         return ino_ok("file not found", verified=False)
@@ -77,18 +78,36 @@ class InoCivitHelper:
 
         if ino_is_err(get_model_req):
             return get_model_req
+
         model = get_model_req["model"]
-        remote_file = get_model_req["files"][file_id]
+
+        remote_files = get_model_req["files"]
+
+        try:
+            remote_file = remote_files[file_id]
+        except IndexError:
+            return ino_err(f"file_id is not valid")
+
+
         remote_file_url = remote_file["downloadUrl"]
         remote_file_sha:str = remote_file["hashes"]["SHA256"]
 
         local_file_path: Path = model_path / remote_file["name"]
 
         verify_local_res = await self.verify_local_file(local_file_path, remote_file_sha, chunk_size)
-        if ino_is_err(verify_local_res) or verify_local_res["verified"]:
+        if ino_is_err(verify_local_res):
             return verify_local_res
 
-        print(remote_file_url)
+        if verify_local_res["verified"]:
+            return ino_ok(
+                f"Download model skipped, model already downloaded and verified",
+                model=model,
+                remote_file=remote_file,
+                remote_files=remote_files
+            )
+        else:
+            print(verify_local_res["msg"])
+
         download_file_res = await self.http_client.download(
             url=remote_file_url,
             dest_path=model_path,
@@ -98,7 +117,6 @@ class InoCivitHelper:
             allow_redirects=True,
             mkdirs=True,
             verify_size=True,
-            headers=self.default_headers
         )
         if ino_is_err(download_file_res):
             return download_file_res
@@ -110,4 +128,9 @@ class InoCivitHelper:
         if ino_is_err(verify_local_res) or not verify_local_res["verified"]:
             return ino_err(f"download completed but file not verified")
 
-        return ino_ok(f"Download model completed")
+        return ino_ok(
+            f"Download model completed, and file verified",
+            model=model,
+            remote_file=remote_file,
+            remote_files=remote_files
+        )
