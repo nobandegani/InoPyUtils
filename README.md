@@ -1,11 +1,11 @@
 # InoPyUtils
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
-[![Version](https://img.shields.io/badge/version-1.5.2-green)](https://pypi.org/project/inopyutils/)
+[![Version](https://img.shields.io/badge/version-1.7.1-green)](https://pypi.org/project/inopyutils/)
 [![License](https://img.shields.io/badge/license-MPL--2.0-orange)](LICENSE)
 [![Development Status](https://img.shields.io/badge/status-beta-yellow)](https://pypi.org/project/inopyutils/)
 
-A comprehensive Python utility library designed for modern development workflows, featuring S3-compatible storage operations, advanced JSON processing, media handling, file management, configuration management, structured logging, an async HTTP client, and audio processing utilities.
+A comprehensive Python utility library designed for modern development workflows, featuring S3-compatible storage operations, advanced JSON/CSV processing, media and audio handling, file/config management, structured logging, async HTTP utilities, MongoDB access, CivitAI download helpers, and common utility primitives.
 
 ---
 
@@ -139,7 +139,7 @@ async def main():
         timeout_total=30.0,
         retries=3,
         backoff_factor=0.7,
-        default_headers={"User-Agent": "InoPyUtils/1.5.2"},
+        default_headers={"User-Agent": "InoPyUtils/1.7.1"},
         )
 
     # Simple GET returning JSON
@@ -157,6 +157,39 @@ async def main():
 
     # Clean up when done (if not using async context manager)
     await client.close()
+
+asyncio.run(main())
+```
+
+---
+
+### 🤖 CivitAI Integration (`InoCivitHelper`)
+Async helper for fetching CivitAI model metadata and downloading model files with SHA-256 verification.
+
+**Features:**
+- **Model Metadata** - Fetch model and model-version details from CivitAI APIs
+- **Verified Downloads** - Validate local/remote SHA-256 hashes and skip already verified files
+- **Resume Support** - Uses `InoHttpHelper.download()` with resume and multi-connection support
+
+```python
+import asyncio
+from pathlib import Path
+from inopyutils.civitai_helper import InoCivitHelper
+
+async def main():
+    civit = InoCivitHelper(token="your_civitai_token")
+    try:
+        res = await civit.download_model(
+            model_path=Path("./models"),
+            model_id=123,
+            model_version=456,
+            file_id=0,
+            chunk_size=8,
+            download_connections=6,
+        )
+        print(res)
+    finally:
+        await civit.close()
 
 asyncio.run(main())
 ```
@@ -341,7 +374,7 @@ out_files = InoThumbnailHelper.image_generate_square_thumbnails(
     quality=85,
     crop=False,  # if True: center-crops to square; if False: pads with blurred background
 )
-print(out_files)  # [".../sample_ino_t_256_.jpg", ".../sample_ino_t_512_.jpg", ...]
+print(out_files)  # [".../sample_ino_t_256.jpg", ".../sample_ino_t_512.jpg", ...]
 
 # Async API
 import asyncio
@@ -489,6 +522,31 @@ asyncio.run(main())
 
 ---
 
+### 🧰 Utility Helpers (`ino_ok`, `ino_err`, `ino_is_err`, `InoUtilHelper`)
+Small utility primitives for consistent result envelopes and common ID/hash helpers.
+
+**Features:**
+- **Result Envelopes** - `ino_ok()` / `ino_err()` standardize `{"success", "msg", ...}` dictionaries
+- **Error Predicate** - `ino_is_err()` works with helper result dictionaries
+- **General Utilities** - string hashing, time-based unique IDs, UTC+random base32 IDs
+
+```python
+from inopyutils import ino_ok, ino_err, ino_is_err, InoUtilHelper
+
+res = ino_ok("operation complete", value=42)
+print(res["success"], res["value"])
+
+if ino_is_err(ino_err("failed")):
+    print("error path")
+
+digest = InoUtilHelper.hash_string("hello", algo="sha256", length=16)
+uid = InoUtilHelper.generate_unique_id_by_time()
+stamp = InoUtilHelper.get_date_time_utc_base64()
+print(digest, uid, stamp)
+```
+
+---
+
 ### 📝 Structured Logging (`InoLogHelper`)
 Advanced logging system with automatic batching, categorization, and JSON-Lines format output.
 
@@ -559,7 +617,7 @@ pip install -e ".[dev]"
 ### System Requirements
 - **Python**: 3.9 or higher
 - **Operating System**: Cross-platform (Windows, macOS, Linux)
-- **Optional**: FFmpeg (for video processing features)
+- **Optional**: FFmpeg (for audio transcoding/decoding and media conversion helpers)
 
 ---
 
@@ -568,16 +626,16 @@ pip install -e ".[dev]"
 ### Core Dependencies
 - **pillow** - Image processing and manipulation
 - **pillow_heif** - HEIF/HEIC image format support
-- **opencv-python** - Advanced video processing capabilities
 - **aioboto3** - Asynchronous AWS S3 operations
 - **aiofiles** - Asynchronous file I/O operations
 - **aiohttp** - Asynchronous HTTP client used by InoHttpHelper
 - **botocore** - AWS core functionality and exception handling
 - **boto3** - AWS SDK for Python
+- **motor** - Async MongoDB driver used by InoMongoHelper
 - **inocloudreve** - Extended cloud storage integration
 
 ### Optional Dependencies
-- **FFmpeg** - Required for video processing features (install separately)
+- **FFmpeg** - Required for audio transcoding/decoding and media conversion features (install separately)
 
 ---
 
@@ -612,7 +670,7 @@ python -m pytest tests/
 
 ## 📊 Project Status
 
-- **Current Version**: 1.3.4
+- **Current Version**: 1.7.1
 - **Development Status**: Beta
 - **Python Support**: 3.9+
 - **License**: Mozilla Public License 2.0
