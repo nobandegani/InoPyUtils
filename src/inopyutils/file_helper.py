@@ -415,9 +415,9 @@ class InoFileHelper:
             return ino_err(f"❌ Failed to save string to '{save_path}': {e}")
 
     @staticmethod
-    async def get_file_hash_sha_256(file_path: Path) -> dict:
+    async def get_file_hash_sha_256(file_path: Path, chunk_size:int = 8) -> dict:
         """
-        Asynchronously calculate the SHA-256 hash of the given file using aiofiles.
+        Asynchronously calculate the SHA-256 hash of the given file.
 
         Args:
             file_path: Path to the file to hash.
@@ -435,17 +435,19 @@ class InoFileHelper:
             if not path.is_file():
                 return ino_err(f"❌ Not a file: {path}")
 
-            sha256 = hashlib.sha256()
-            # Use a reasonable chunk size to support large files
-            chunk_size = 1024 * 1024  # 1 MiB
-            async with aiofiles.open(path, "rb") as f:
-                while True:
-                    chunk = await f.read(chunk_size)
-                    if not chunk:
-                        break
-                    sha256.update(chunk)
+            def _hash_file() -> str:
+                with path.open("rb") as f:
+                    # Fast path in CPython (3.11+): C-level file digesting
+                    if hasattr(hashlib, "file_digest"):
+                        return hashlib.file_digest(f, "sha256").hexdigest()
 
-            digest = sha256.hexdigest()
+                    # Fallback for older Python versions
+                    sha256 = hashlib.sha256()
+                    for chunk in iter(lambda: f.read(chunk_size * 1024 * 1024), b""):
+                        sha256.update(chunk)
+                    return sha256.hexdigest()
+
+            digest = await asyncio.to_thread(_hash_file)
             return ino_ok(f"✅ SHA-256 computed for '{path.name}'", sha=digest)
         except Exception as e:
             return ino_err(f"❌ Failed to compute SHA-256 for '{file_path}': {e}")
