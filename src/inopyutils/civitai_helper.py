@@ -73,7 +73,14 @@ class InoCivitHelper:
 
         return ino_ok("file not found", verified=False)
 
-    async def download_model(self, model_path: Path, model_id: int, model_version: int, file_id:int = 0, chunk_size:int = 8):
+    async def download_model(
+            self, model_path: Path,
+            model_id: int,
+            model_version: int,
+            file_id:int = 0,
+            chunk_size:int = 8,
+            download_connections:int = 6
+    ):
         get_model_req = await self.get_model_version(model_version)
 
         if ino_is_err(get_model_req):
@@ -117,6 +124,7 @@ class InoCivitHelper:
             allow_redirects=True,
             mkdirs=True,
             verify_size=True,
+            connection=download_connections,
         )
         if ino_is_err(download_file_res):
             return download_file_res
