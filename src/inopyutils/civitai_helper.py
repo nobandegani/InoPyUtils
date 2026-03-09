@@ -136,7 +136,7 @@ class InoCivitHelper:
 
         verify_local_res = await self.verify_local_file(local_file_path, remote_file_sha, chunk_size)
         if ino_is_err(verify_local_res) or not verify_local_res["verified"]:
-            return ino_err(f"download completed but file not verified")
+            return ino_err(f"download completed but file not verified", status_code=download_file_res["status_code"], status_msg=download_file_res["msg"] )
 
         return ino_ok(
             f"Download model completed, and file verified",
