@@ -9,7 +9,6 @@ from typing import Optional, Dict, Any, Callable, Awaitable
 import logging
 import random
 import mimetypes
-from urllib.parse import quote
 
 
 class InoS3Helper:
@@ -359,7 +358,7 @@ class InoS3Helper:
                 effective_content_type = content_type
                 if (not content_type or content_type == "application/octet-stream") and guess:
                     effective_content_type = guess
-                extra_args = {"ContentType": effective_content_type}
+                extra_args: Dict[str, Any] = {"ContentType": effective_content_type}
                 if metadata:
                     extra_args["Metadata"] = metadata
                 await s3.upload_file(
@@ -716,7 +715,7 @@ class InoS3Helper:
         local_folder = Path(local_folder_path)
         local_folder.mkdir(parents=True, exist_ok=True)
 
-        result = {
+        result: Dict[str, Any] = {
             "success": True,
             "msg": "",
             "total_files": 0,
@@ -919,7 +918,7 @@ class InoS3Helper:
         if not s3_folder_key.endswith("/"):
             s3_folder_key += "/"
 
-        result = {
+        result: Dict[str, Any] = {
             "success": True,
             "msg": "",
             "total_files": 0,
@@ -1380,7 +1379,7 @@ class InoS3Helper:
         norm_key = self._normalize_key(s3_key)
         async def _op() -> Dict[str, Any]:
             async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
-                params = {
+                params: Dict[str, Any] = {
                     "Bucket": bucket,
                     "Key": norm_key,
                     "Body": data,
