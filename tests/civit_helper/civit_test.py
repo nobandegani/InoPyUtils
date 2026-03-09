@@ -6,6 +6,8 @@ from src.inopyutils.civitai_helper import InoCivitHelper
 async def main():
     civit = InoCivitHelper(token="")
 
+    print("Ino Civit helper test started")
+
     #get_model = await civit.get_model(969431)
     #print(get_model["model"])
 
@@ -14,9 +16,18 @@ async def main():
 
     download_model = await civit.download_model(
         model_path=Path("assets"),
-        model_id=2327389,
-        model_version=2618128,
-        file_id=1,
+        model_id=0,
+        model_version=2477552,
+        file_id=0,
+        download_connections=4
+    )
+    print(download_model)
+
+    download_model = await civit.download_model(
+        model_path=Path("assets"),
+        model_id=0,
+        model_version=2477555,
+        file_id=0,
         download_connections=4
     )
     print(download_model)
