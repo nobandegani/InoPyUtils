@@ -934,6 +934,14 @@ class InoS3Helper:
             return result
 
         max_concurrent = max(1, int(concc))
+        file_attempt_limit = max(3, self.retries + 1)
+        transfer_config = TransferConfig(
+            multipart_threshold=64 * 1024 * 1024,
+            multipart_chunksize=64 * 1024 * 1024,
+            max_concurrency=max(2, min(16, max_concurrent)),
+            num_download_attempts=max(10, self.retries + 1),
+            use_threads=True,
+        )
 
         try:
             remote_objects: Dict[str, Dict[str, Any]] = {}
@@ -1009,45 +1017,98 @@ class InoS3Helper:
 
                         local_file = local_folder / rel_key
                         local_file.parent.mkdir(parents=True, exist_ok=True)
+                        downloaded_any = False
+                        updated_existing = False
+                        last_verify_res: Dict[str, Any] = {
+                            "success": False,
+                            "msg": "Unknown verification state",
+                            "error_code": "UnknownVerificationState"
+                        }
+                        last_error: Optional[Exception] = None
 
-                        must_download = True
-                        changed = False
-                        if local_file.exists() and local_file.is_file():
-                            local_size = local_file.stat().st_size
-                            if local_size == remote_size:
-                                # If ETag appears to be plain MD5 (single-part), verify before skipping
-                                if etag and "-" not in etag:
-                                    import hashlib
-                                    h = hashlib.md5()
-                                    async with aiofiles.open(local_file, "rb") as f:  # type: ignore
-                                        while True:
-                                            chunk = await f.read(1024 * 1024)
-                                            if not chunk:
-                                                break
-                                            h.update(chunk)
-                                    if h.hexdigest() == etag:
+                        for attempt in range(file_attempt_limit):
+                            must_download = True
+                            if local_file.exists() and local_file.is_file():
+                                local_size = local_file.stat().st_size
+                                if local_size == remote_size:
+                                    # If ETag appears to be plain MD5 (single-part), verify before skipping
+                                    if etag and "-" not in etag:
+                                        import hashlib
+                                        h = hashlib.md5()
+                                        async with aiofiles.open(local_file, "rb") as f:  # type: ignore
+                                            while True:
+                                                chunk = await f.read(1024 * 1024)
+                                                if not chunk:
+                                                    break
+                                                h.update(chunk)
+                                        if h.hexdigest() == etag:
+                                            must_download = False
+                                    else:
+                                        # Without a trustworthy remote hash, size match is the best pre-download signal
                                         must_download = False
-                                else:
-                                    # Without a trustworthy remote hash, size match is the best pre-download signal
-                                    must_download = False
 
-                        if must_download:
-                            await s3.download_file(bucket, s3_obj_key, str(local_file))
-                            changed = True
+                            try:
+                                if must_download:
+                                    if local_file.exists():
+                                        local_file.unlink(missing_ok=True)
+                                    await s3.download_file(bucket, s3_obj_key, str(local_file), Config=transfer_config)
+                                    downloaded_any = True
+                                    if rel_key in local_files:
+                                        updated_existing = True
 
-                        verify_res = await self.verify_file(
-                            local_file_path=str(local_file),
-                            s3_key=s3_obj_key,
-                            bucket_name=bucket,
-                            use_md5=True,
-                            use_sha256=True
-                        )
+                                verify_res = await self.verify_file(
+                                    local_file_path=str(local_file),
+                                    s3_key=s3_obj_key,
+                                    bucket_name=bucket,
+                                    use_md5=True,
+                                    use_sha256=True
+                                )
+                                last_verify_res = verify_res
+
+                                if verify_res.get("success", False):
+                                    return {
+                                        "relative_path": rel_key,
+                                        "downloaded": downloaded_any,
+                                        "updated": updated_existing,
+                                        "verify": verify_res,
+                                        "attempts": attempt + 1,
+                                    }
+
+                                # verification failed: force re-download next round
+                                if local_file.exists():
+                                    local_file.unlink(missing_ok=True)
+
+                            except Exception as e:
+                                last_error = e
+                                if local_file.exists():
+                                    local_file.unlink(missing_ok=True)
+
+                            if attempt < file_attempt_limit - 1:
+                                wait_time = min(30.0, (2 ** attempt) + random.uniform(0, 1))
+                                await asyncio.sleep(wait_time)
+
+                        if last_error is not None:
+                            return {
+                                "relative_path": rel_key,
+                                "downloaded": downloaded_any,
+                                "updated": updated_existing,
+                                "verify": {
+                                    "success": False,
+                                    "msg": f"Failed after {file_attempt_limit} attempts: {str(last_error)}",
+                                    "error_code": type(last_error).__name__
+                                },
+                                "attempts": file_attempt_limit,
+                            }
 
                         return {
                             "relative_path": rel_key,
-                            "downloaded": must_download,
-                            "updated": changed and rel_key in local_files,
-                            "verify": verify_res,
+                            "downloaded": downloaded_any,
+                            "updated": updated_existing,
+                            "verify": {
+                                **last_verify_res,
+                                "msg": f"Failed verification after {file_attempt_limit} attempts: {last_verify_res.get('msg', 'Unknown error')}"
+                            },
+                            "attempts": file_attempt_limit,
                         }
 
                 tasks = [_sync_one(rel) for rel in sorted(remote_objects.keys())]
