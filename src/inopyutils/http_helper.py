@@ -537,7 +537,7 @@ class InoHttpHelper:
             start_offset = tmp.stat().st_size if resume and tmp.exists() else 0
             # Set Range header if resuming and not already provided
             req_headers = dict(merged_headers)
-            if start_offset > 0 and "Range" not in {k.title(): v for k, v in req_headers.items()}:
+            if start_offset > 0 and "Range" not in {k.title() for k in req_headers}:
                 req_headers["Range"] = f"bytes={start_offset}-"
 
             try:
@@ -580,11 +580,6 @@ class InoHttpHelper:
                             method="GET",
                             attempts=attempt,
                         )
-
-                    # Retry on configured statuses
-                    if status in self._retry_for_statuses and attempt < attempts:
-                        await self._sleep_backoff(attempt)
-                        continue
 
                     # Handle resume/non-resume semantics
                     if start_offset > 0 and status == 200:
@@ -949,7 +944,8 @@ class InoHttpHelper:
         return downloaded
 
     async def _sleep_backoff(self, attempt: int) -> None:
+        import random
         delay = self._backoff_factor * (2 ** (attempt - 1))
-        # Add a small jitter to avoid thundering herd
-        delay *= 1 + 0.1 * (attempt % 3)
+        # Add random jitter to avoid thundering herd
+        delay *= 1 + random.uniform(0, 0.3)
         await asyncio.sleep(delay)
