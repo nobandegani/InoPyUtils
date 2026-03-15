@@ -101,7 +101,9 @@ def _cleanup_local():
 # Tests
 # ---------------------------------------------------------------------------
 
-from src.inopyutils.s3_helper import InoS3Helper
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from inopyutils.s3_helper import InoS3Helper
 
 
 async def run_tests():
