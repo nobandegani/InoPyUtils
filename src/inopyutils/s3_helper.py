@@ -35,26 +35,25 @@ class InoS3Helper:
     """
 
     def __init__(self, aws_access_key_id: Optional[str] = None, aws_secret_access_key: Optional[str] = None, aws_session_token: Optional[str] = None, region_name: str = "us-east-1", bucket_name: Optional[str] = None, endpoint_url: Optional[str] = None, retries: int = 3, config: Optional[Config] = None):
-        self.region_name = None
-        self.bucket_name = None
-        self.endpoint_url = None
-        self.retries = 3
+        self.region_name = region_name
+        self.bucket_name = bucket_name
+        self.endpoint_url = endpoint_url
+        self.retries = retries
         self.config: Optional[Config] = None
         self.session = None
         self.use_emoji: bool = True
         self.transfer_config: Optional[TransferConfig] = None
-        # If parameters are passed, initialize immediately for convenience
-        if any([aws_access_key_id, aws_secret_access_key, bucket_name, endpoint_url, config is not None]) or retries != 3 or region_name != "us-east-1":
-            self.init(
-                aws_access_key_id=aws_access_key_id,
-                aws_secret_access_key=aws_secret_access_key,
-                aws_session_token=aws_session_token,
-                region_name=region_name,
-                bucket_name=bucket_name,
-                endpoint_url=endpoint_url,
-                retries=retries,
-                config=config,
-            )
+        # Always call init to set up session, config, and transfer_config
+        self.init(
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+            region_name=region_name,
+            bucket_name=bucket_name,
+            endpoint_url=endpoint_url,
+            retries=retries,
+            config=config,
+        )
 
     def init(
             self,
@@ -118,6 +117,24 @@ class InoS3Helper:
         else:
             self.session = Session(region_name=region_name)
 
+    async def close(self) -> None:
+        """Clean up resources. Safe to call multiple times."""
+        self.session = None
+
+    async def __aenter__(self) -> "InoS3Helper":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
+
+    def _require_session(self) -> Session:
+        """Return the aioboto3 Session, raising if not initialized."""
+        if self.session is None:
+            raise RuntimeError(
+                "InoS3Helper is not initialized. Pass credentials to the constructor or call init() first."
+            )
+        return self.session
+
     def _validate_bucket(self, bucket_name: Optional[str]) -> Optional[Dict[str, Any]]:
         """
         Validate bucket name and return error dict if invalid, None if valid
@@ -180,7 +197,7 @@ class InoS3Helper:
                     else:
                         # Out of attempts; return last result
                         return result
-                # If operation returns unsuccessful result without retryable flag, don"t retry
+                # If operation returns unsuccessful result without retryable flag, don't retry
                 return result
             except (FileNotFoundError, NoCredentialsError, ValueError) as e:
                 error_msg = f"❌ {operation_name} failed with non-retryable error: {str(e)}"
@@ -289,7 +306,7 @@ class InoS3Helper:
             }
 
         async def _upload_operation() -> Dict[str, Any]:
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 local_extra_args = dict(extra_args or {})
                 if "ContentType" not in local_extra_args:
                     guess, _ = mimetypes.guess_type(local_file_path)
@@ -353,7 +370,7 @@ class InoS3Helper:
             }
 
         async def _upload_operation() -> Dict[str, Any]:
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 # Build ExtraArgs with sensible defaults and optional overrides
                 guess, _ = mimetypes.guess_type(local_file_path)
                 effective_content_type = content_type
@@ -413,7 +430,7 @@ class InoS3Helper:
         async def _download_operation() -> Dict[str, Any]:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
 
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 await s3.download_file(bucket, norm_key, local_file_path)
                 success_msg = f"✅ Successfully downloaded s3://{bucket}/{norm_key} to {local_file_path}"
                 logging.info(success_msg)
@@ -456,7 +473,7 @@ class InoS3Helper:
         async def _download_operation() -> Dict[str, Any]:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
 
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 response = await s3.get_object(Bucket=bucket, Key=norm_key)
                 stream = response["Body"]
                 async with aiofiles.open(local_file_path, "wb") as file:
@@ -520,7 +537,7 @@ class InoS3Helper:
             }
 
         async def _list_operation() -> Dict[str, Any]:
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 all_objects = []
                 common_prefixes_accum = []
                 token = None
@@ -604,7 +621,7 @@ class InoS3Helper:
             prefix += "/"
 
         async def _count_op() -> Dict[str, Any]:
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 total = 0
                 token: Optional[str] = None
                 while True:
@@ -669,7 +686,7 @@ class InoS3Helper:
         norm_key = self._normalize_key(s3_key)
 
         async def _delete_operation() -> Dict[str, Any]:
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 await s3.delete_object(Bucket=bucket, Key=norm_key)
                 success_msg = f"✅ Successfully deleted s3://{bucket}/{norm_key}"
                 logging.info(success_msg)
@@ -732,7 +749,7 @@ class InoS3Helper:
             all_objects = []
             continuation_token = None
             
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 while True:
                     list_params = {
                         "Bucket": bucket,
@@ -757,7 +774,7 @@ class InoS3Helper:
                 file_objects = [obj for obj in all_objects if not obj["Key"].endswith("/")]
                 result["total_files"] = len(file_objects)
                 
-                logging.info(f"Found {result["total_files"]} files to download from s3://{bucket}/{s3_folder_key}")
+                logging.info(f"Found {result['total_files']} files to download from s3://{bucket}/{s3_folder_key}")
 
                 # Download files concurrently with semaphore to limit concurrent operations
                 semaphore = asyncio.Semaphore(max_concurrent)
@@ -815,17 +832,17 @@ class InoS3Helper:
                     logging.debug(f"Successfully downloaded {relative_path}")
                 else:
                     result["failed_downloads"] += 1
-                    error_msg = f"Failed to download {relative_path}: {download_outcome.get("msg", "Unknown error")}"
+                    error_msg = f"Failed to download {relative_path}: {download_outcome.get('msg', 'Unknown error')}"
                     result["errors"].append(error_msg)
                     logging.error(error_msg)
 
             result["success"] = result["failed_downloads"] == 0
             
             if result["success"]:
-                result["msg"] = f"✅ Successfully downloaded folder s3://{bucket}/{s3_folder_key} to {local_folder_path} ({result["downloaded_successfully"]} files)"
+                result["msg"] = f"✅ Successfully downloaded folder s3://{bucket}/{s3_folder_key} to {local_folder_path} ({result['downloaded_successfully']} files)"
                 logging.info(result["msg"])
             else:
-                result["msg"] = f"❌ Folder download completed with {result["failed_downloads"]} failures. Downloaded {result["downloaded_successfully"]}/{result["total_files"]} files"
+                result["msg"] = f"❌ Folder download completed with {result['failed_downloads']} failures. Downloaded {result['downloaded_successfully']}/{result['total_files']} files"
                 result["error_code"] = "PartialFailure"
                 logging.warning(result["msg"])
 
@@ -849,7 +866,7 @@ class InoS3Helper:
                 if not verification.get("success", False):
                     result["success"] = False
                     result["error_code"] = "VerificationFailed"
-                    result["msg"] = f"❌ Downloaded with verification mismatches: {verification.get("summary", verification.get("msg", "Mismatch found"))}"
+                    result["msg"] = f"❌ Downloaded with verification mismatches: {verification.get('summary', verification.get('msg', 'Mismatch found'))}"
                     logging.error(result["msg"])
             except Exception as ve:
                 # Do not fail the main operation if verification step errors; report it
@@ -947,7 +964,7 @@ class InoS3Helper:
             remote_objects: Dict[str, Dict[str, Any]] = {}
             continuation_token = None
 
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 while True:
                     params: Dict[str, Any] = {
                         "Bucket": bucket,
@@ -1256,12 +1273,12 @@ class InoS3Helper:
                 logging.info(result["msg"])
                 return result
 
-            logging.info(f"Found {result["total_files"]} files to upload from {local_folder_path} to s3://{bucket}/{s3_folder_key}")
+            logging.info(f"Found {result['total_files']} files to upload from {local_folder_path} to s3://{bucket}/{s3_folder_key}")
 
             # Upload files concurrently with semaphore to limit concurrent operations
             semaphore = asyncio.Semaphore(max_concurrent)
 
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 async def _upload_single_file_with_semaphore(file_info: Dict[str, str]) -> Dict[str, Any]:
                     """Upload a single file with semaphore control using shared client"""
                     async with semaphore:
@@ -1289,7 +1306,7 @@ class InoS3Helper:
                                 "file_info": file_info,
                                 "result": {
                                     "success": True,
-                                    "msg": f"Uploaded {file_info["relative_path"]}"
+                                    "msg": f"Uploaded {file_info['relative_path']}"
                                 }
                             }
                         except Exception as e:
@@ -1320,10 +1337,10 @@ class InoS3Helper:
                 
                 if upload_outcome.get("success", False):
                     result["uploaded_successfully"] += 1
-                    logging.debug(f"Successfully uploaded {file_info["relative_path"]}")
+                    logging.debug(f"Successfully uploaded {file_info['relative_path']}")
                 else:
                     result["failed_uploads"] += 1
-                    error_msg = f"Failed to upload {file_info["relative_path"]}: {upload_outcome.get("msg", "Unknown error")}"
+                    error_msg = f"Failed to upload {file_info['relative_path']}: {upload_outcome.get('msg', 'Unknown error')}"
                     result["errors"].append(error_msg)
                     logging.error(error_msg)
 
@@ -1331,10 +1348,10 @@ class InoS3Helper:
             result["success"] = result["failed_uploads"] == 0
             
             if result["success"]:
-                result["msg"] = f"✅ Successfully uploaded folder {local_folder_path} to s3://{bucket}/{s3_folder_key} ({result["uploaded_successfully"]} files)"
+                result["msg"] = f"✅ Successfully uploaded folder {local_folder_path} to s3://{bucket}/{s3_folder_key} ({result['uploaded_successfully']} files)"
                 logging.info(result["msg"])
             else:
-                result["msg"] = f"❌ Folder upload failed with {result["failed_uploads"]} failures. Uploaded {result["uploaded_successfully"]}/{result["total_files"]} files"
+                result["msg"] = f"❌ Folder upload failed with {result['failed_uploads']} failures. Uploaded {result['uploaded_successfully']}/{result['total_files']} files"
                 result["error_code"] = "PartialFailure"
                 logging.error(result["msg"])
 
@@ -1358,7 +1375,7 @@ class InoS3Helper:
                 if not verification.get("success", False):
                     result["success"] = False
                     result["error_code"] = "VerificationFailed"
-                    result["msg"] = f"❌ Uploaded with verification mismatches: {verification.get("summary", verification.get("msg", "Mismatch found"))}"
+                    result["msg"] = f"❌ Uploaded with verification mismatches: {verification.get('summary', verification.get('msg', 'Mismatch found'))}"
                     logging.error(result["msg"])
             except Exception as ve:
                 # Do not fail the main operation if verification step errors; report it
@@ -1395,7 +1412,7 @@ class InoS3Helper:
 
         async def _exists_operation() -> Dict[str, Any]:
             try:
-                async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+                async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                     await s3.head_object(Bucket=bucket, Key=norm_key)
                     return {
                         "success": True,
@@ -1424,6 +1441,7 @@ class InoS3Helper:
             _exists_operation,
             f"object_exists(s3://{bucket}/{norm_key})"
         )
+
     async def get_download_link(
             self,
             s3_key: str,
@@ -1442,7 +1460,7 @@ class InoS3Helper:
             bucket_name: S3 bucket name (uses default if not provided)
             expires_in: Link expiration in seconds (default 3600 = 1 hour)
             as_attachment: If True, sets Content-Disposition to attachment with a filename so browsers download
-            filename: Optional filename to suggest to the browser; defaults to the object"s basename
+            filename: Optional filename to suggest to the browser; defaults to the object's basename
             response_content_type: Optional content type to force in the download response
 
         Returns:
@@ -1456,7 +1474,7 @@ class InoS3Helper:
         norm_key = self._normalize_key(s3_key)
 
         async def _op() -> Dict[str, Any]:
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 # Ensure object exists and get basic metadata
                 head = await s3.head_object(Bucket=bucket, Key=norm_key)
                 content_length = int(head.get("ContentLength", 0))
@@ -1569,7 +1587,7 @@ class InoS3Helper:
             # Build remote files map by listing all objects under prefix
             remote_map: Dict[str, int] = {}
             continuation_token = None
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 while True:
                     params: Dict[str, Any] = {
                         "Bucket": bucket,
@@ -1682,7 +1700,7 @@ class InoS3Helper:
         bucket = bucket_name or self.bucket_name
         norm_key = self._normalize_key(s3_key)
         async def _op() -> Dict[str, Any]:
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 params: Dict[str, Any] = {
                     "Bucket": bucket,
                     "Key": norm_key,
@@ -1712,9 +1730,16 @@ class InoS3Helper:
         bucket = bucket_name or self.bucket_name
         norm_key = self._normalize_key(s3_key)
         async def _op() -> Dict[str, Any]:
-            async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                 resp = await s3.get_object(Bucket=bucket, Key=norm_key)
-                body = await resp["Body"].read()
+                stream = resp["Body"]
+                try:
+                    body = await stream.read()
+                finally:
+                    try:
+                        await stream.close()
+                    except Exception:
+                        pass
                 return {
                     "success": True,
                     "msg": f"✅ Downloaded text from s3://{bucket}/{norm_key}",
@@ -1747,13 +1772,10 @@ class InoS3Helper:
             local_size, remote_size, sizes_match, etag, md5_checked, md5_match (optional),
             and error_code on failure
         """
+        err = self._validate_bucket(bucket_name)
+        if err:
+            return err
         bucket = bucket_name or self.bucket_name
-        if not bucket:
-            return {
-                "success": False,
-                "msg": "❌ Bucket name must be provided either during initialization or method call",
-                "error_code": "MissingBucket"
-            }
 
         local_path = Path(local_file_path)
         if not local_path.exists() or not local_path.is_file():
@@ -1777,8 +1799,8 @@ class InoS3Helper:
 
         async def _verify_operation() -> Dict[str, Any]:
             try:
-                async with self.session.client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
-                    # Retrieve remote object"s metadata
+                async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+                    # Retrieve remote object's metadata
                     head = await s3.head_object(Bucket=bucket, Key=self._normalize_key(s3_key))
                     remote_size = int(head.get("ContentLength", 0))
                     etag_raw = head.get("ETag")
@@ -1836,7 +1858,8 @@ class InoS3Helper:
                             reasons.append("md5 mismatch")
                         if sha256_checked and sha256_match is False:
                             reasons.append("sha256 mismatch")
-                        msg = f"❌ File verification failed ({", ".join(reasons) if reasons else "unknown reason"}): {local_file_path} <-> s3://{bucket}/{s3_key}"
+                        reason_str = ", ".join(reasons) if reasons else "unknown reason"
+                        msg = f"❌ File verification failed ({reason_str}): {local_file_path} <-> s3://{bucket}/{s3_key}"
 
                     result: Dict[str, Any] = {
                         "success": success,
