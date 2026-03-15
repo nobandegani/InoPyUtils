@@ -1,180 +1,374 @@
 # InoPyUtils
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
-[![Version](https://img.shields.io/badge/version-1.7.1-green)](https://pypi.org/project/inopyutils/)
+[![Version](https://img.shields.io/badge/version-1.7.7-green)](https://pypi.org/project/inopyutils/)
 [![License](https://img.shields.io/badge/license-MPL--2.0-orange)](LICENSE)
 [![Development Status](https://img.shields.io/badge/status-beta-yellow)](https://pypi.org/project/inopyutils/)
 
-A comprehensive Python utility library designed for modern development workflows, featuring S3-compatible storage operations, advanced JSON/CSV processing, media and audio handling, file/config management, structured logging, async HTTP utilities, MongoDB access, CivitAI download helpers, and common utility primitives.
+A comprehensive Python utility library designed for modern async workflows, featuring S3-compatible storage, HTTP client, JSON/CSV processing, media and audio handling, file/config management, structured logging, MongoDB access, CivitAI download helpers, and common utility primitives.
 
 ---
 
-## 🚨 Important Notice
+## Important Notice
 
-> **⚠️ Active Development**  
-> This library is under active development and evolving rapidly. Built to satisfy specific use-cases, APIs may change without prior notice.
+> **Active Development** — This library is under active development and evolving rapidly. APIs may change without prior notice.
 >
-> **🔬 Beta Status**  
-> Currently in **beta** stage. While functional, thorough testing is recommended before production use. Please review the code and test extensively for your specific requirements.
+> **Beta Status** — Currently in beta. While functional, thorough testing is recommended before production use.
 >
-> **🤝 Community Welcome**  
-> Contributions, feedback, and issue reports are actively encouraged. Help us make this library better for everyone!
+> **Contributions Welcome** — Feedback, issue reports, and pull requests are encouraged.
 
 ---
 
-## ✨ Key Features
+## Installation
 
-### 🗄️ S3-Compatible Storage (`InoS3Helper`)
-Universal cloud storage solution supporting **AWS S3**, **Backblaze B2**, **DigitalOcean Spaces**, **Wasabi**, **MinIO**, and other S3-compatible services.
+### PyPI (Recommended)
+```bash
+pip install inopyutils
+```
 
-**Features:**
-- **Fully Async Operations** - Non-blocking upload/download operations
-- **Smart Retry Logic** - Configurable exponential backoff retry mechanism
-- **Flexible Authentication** - Access keys, environment variables, IAM roles
-- **Advanced Operations** - Object listing, existence checking, deletion, metadata handling
-- **Batch Operations** - Efficient bulk file operations
+### Development
+```bash
+git clone https://github.com/nobandegani/InoPyUtils.git
+cd InoPyUtils
+pip install -e .
+```
+
+### Requirements
+- **Python** 3.9+
+- **FFmpeg** (optional) — required for `InoMediaHelper` video conversion and `InoAudioHelper` audio transcoding
+
+---
+
+## Helpers
+
+### S3-Compatible Storage (`InoS3Helper`)
+
+Async S3 client supporting **AWS S3**, **Backblaze B2**, **DigitalOcean Spaces**, **Wasabi**, **MinIO**, and other S3-compatible services. Features retry with exponential backoff, folder upload/download/sync, presigned URLs, and file verification.
 
 ```python
 import asyncio
 from inopyutils import InoS3Helper
 
 async def main():
-    # Initialize with Backblaze B2
-    s3_client = InoS3Helper(
-        aws_access_key_id='your_key_id',
-        aws_secret_access_key='your_secret_key',
-        endpoint_url='https://s3.us-west-004.backblazeb2.com',
-        region_name='us-west-004',
-        bucket_name='your-bucket',
-        retries=5
-    )
+    async with InoS3Helper(
+        aws_access_key_id="your_key_id",
+        aws_secret_access_key="your_secret_key",
+        endpoint_url="https://s3.us-west-004.backblazeb2.com",
+        region_name="us-west-004",
+        bucket_name="your-bucket",
+        retries=5,
+    ) as s3:
+        # Upload & download
+        await s3.upload_file("local.txt", "remote/path/file.txt")
+        await s3.download_file("remote/path/file.txt", "downloaded.txt")
 
-    # Async file operations
-    await s3_client.upload_file('local_file.txt', 'remote/path/file.txt')
-    await s3_client.download_file('remote/path/file.txt', 'downloaded_file.txt')
+        # Check existence, list objects
+        exists = await s3.object_exists("remote/path/file.txt")
+        objects = await s3.list_objects(prefix="remote/path/")
 
-    # Check file existence and list objects
-    exists = await s3_client.object_exists('remote/path/file.txt')
-    listed = await s3_client.list_objects(prefix='remote/path/')
-    print(exists, listed)
+        # Folder operations
+        await s3.upload_folder("remote/folder/", "local_folder/")
+        await s3.download_folder("remote/folder/", "local_download/")
+        await s3.sync_folder("remote/folder/", "local_sync/")
+
+        # Quick text/bytes
+        await s3.put_text("hello", "remote/hello.txt")
+        res = await s3.get_text("remote/hello.txt")
+        print(res["text"])
+
+        # Presigned download link
+        link = await s3.get_download_link("remote/path/file.txt", expires_in=3600)
+        print(link["url"])
 
 asyncio.run(main())
 ```
 
 ---
 
-### 🔧 Advanced JSON Processing (`InoJsonHelper`)
-Comprehensive JSON manipulation toolkit with both synchronous and asynchronous operations, perfect for configuration management and data processing.
+### HTTP Client (`InoHttpHelper`)
 
-**Features:**
-- **Async/Sync File Operations** - Both synchronous and asynchronous file I/O
-- **Deep Data Manipulation** - Merge, flatten, unflatten complex nested structures
-- **Advanced Querying** - Safe path-based data retrieval and modification
-- **Data Comparison** - Intelligent JSON structure comparison with detailed differences
-- **Filtering & Cleaning** - Remove null values, filter keys, clean data structures
-- **Array Search** - Find specific elements in complex nested arrays
-
-```python
-import asyncio
-from inopyutils import InoJsonHelper
-
-def demo_sync_ops():
-    # String/Dict conversions with error handling
-    result = InoJsonHelper.string_to_dict('{"key": "value"}')
-    data = result.get("data") if result.get("success") else {}
-
-    # Deep operations
-    dict1 = {"a": 1, "nested": {"x": 10}}
-    dict2 = {"b": 2, "nested": {"y": 20}}
-    merged = InoJsonHelper.deep_merge(dict1, dict2)
-    flattened = InoJsonHelper.flatten({"a": {"b": {"c": 1}}})  # {"a.b.c": 1}
-    original = InoJsonHelper.unflatten({"a.b.c": 1})  # {"a": {"b": {"c": 1}}}
-
-    # Safe path operations
-    value = InoJsonHelper.safe_get(data, "user.profile.name", default="Unknown")
-    InoJsonHelper.safe_set(data, "user.profile.age", 25)
-
-    # Advanced filtering and searching
-    cleaned = InoJsonHelper.remove_null_values(data or {}, remove_empty=True)
-    filtered = InoJsonHelper.filter_keys({"name":"Ann","email":"a@b"}, ["name", "email"], deep=True)
-    found = InoJsonHelper.find_field_from_array([
-        {"id": "user_123", "n": 1}, {"id": "user_999", "n": 2}
-    ], "id", "user_123")
-
-    # Data comparison with detailed diff
-    old_data = {"a": 1}
-    new_data = {"a": 2}
-    differences = InoJsonHelper.compare(old_data, new_data)
-
-async def demo_async_ops():
-    await InoJsonHelper.save_json_as_json_async({"config": "data"}, "config.json")
-    loaded = await InoJsonHelper.read_json_from_file_async("config.json")
-    print(loaded)
-
-if __name__ == "__main__":
-    demo_sync_ops()
-    asyncio.run(demo_async_ops())
-```
-
----
-
-### 🌐 HTTP Client (`InoHttpHelper`)
-High-level asynchronous HTTP client built on aiohttp with robust retry, backoff, timeouts, and base URL support.
-
-**Features:**
-- **Configurable Timeouts** - Total/connect/read/socket timeouts per request/session
-- **Automatic Retries** - Exponential backoff for transient errors (429, 5xx)
-- **Base URL & Headers** - Compose relative URLs and merge default headers
-- **Auth Support** - BasicAuth or (username, password)
-- **Flexible Responses** - JSON, text, or raw bytes
+Async HTTP client built on aiohttp with configurable timeouts, retries with exponential backoff, base URL support, auth, and file downloads with resume and multi-connection support.
 
 ```python
 import asyncio
 from inopyutils import InoHttpHelper
 
 async def main():
-    # Create a reusable client with sensible defaults
-    client = InoHttpHelper(
+    async with InoHttpHelper(
         base_url="https://api.example.com",
         timeout_total=30.0,
         retries=3,
         backoff_factor=0.7,
-        default_headers={"User-Agent": "InoPyUtils/1.7.1"},
+        default_headers={"User-Agent": "InoPyUtils/1.7.7"},
+    ) as client:
+        # GET JSON
+        resp = await client.get("/users/42", json=True)
+
+        # POST JSON
+        resp = await client.post(
+            "/items",
+            json={"name": "Widget", "price": 9.99},
+            json_response=True,
         )
 
-    # Simple GET returning JSON
-    resp = await client.get("/users/42", json=True)
+        # Download file with resume support
+        resp = await client.download(
+            "https://example.com/file.zip",
+            dest_path="downloads/",
+            resume=True,
+            connection=4,  # multi-connection parallel download
+        )
 
-    # POST JSON and read JSON response
-    resp = await client.post(
-        "/items",
-        json={"name": "Widget", "price": 9.99},
-        json_response=True,
-    )
+asyncio.run(main())
+```
 
-    # Download raw bytes
-    image_bytes = await client.get("/images/logo.png", return_bytes=True)
+All verb methods (`get`, `post`, `put`, `delete`, `patch`) return a dict with: `success`, `msg`, `status_code`, `headers`, `data`, `url`, `method`, `attempts`.
 
-    # Clean up when done (if not using async context manager)
-    await client.close()
+---
+
+### JSON Processing (`InoJsonHelper`)
+
+JSON manipulation toolkit with sync and async file I/O, deep merge, flatten/unflatten, dot-path access, comparison, filtering, and search.
+
+```python
+import asyncio
+from inopyutils import InoJsonHelper
+
+# String/Dict conversion
+result = InoJsonHelper.string_to_dict('{"key": "value"}')
+data = result["data"] if result["success"] else {}
+
+# Deep merge
+merged = InoJsonHelper.deep_merge({"a": 1, "nested": {"x": 10}}, {"b": 2, "nested": {"y": 20}})
+
+# Flatten / unflatten
+flat = InoJsonHelper.flatten({"a": {"b": {"c": 1}}})      # {"a.b.c": 1}
+nested = InoJsonHelper.unflatten({"a.b.c": 1})             # {"a": {"b": {"c": 1}}}
+
+# Safe dot-path access
+value = InoJsonHelper.safe_get(data, "user.profile.name", default="Unknown")
+InoJsonHelper.safe_set(data, "user.profile.age", 25)
+
+# Compare two structures
+diff = InoJsonHelper.compare({"a": 1}, {"a": 2})
+
+# Async file I/O
+async def save_and_load():
+    await InoJsonHelper.save_json_as_json_async({"config": "data"}, "config.json")
+    loaded = await InoJsonHelper.read_json_from_file_async("config.json")
+    print(loaded["data"])
+
+asyncio.run(save_and_load())
+```
+
+---
+
+### CSV Utilities (`InoCsvHelper`)
+
+Async CSV file read/write with in-memory helpers for headers, rows, columns, and sorting. Data is always `list[dict]`.
+
+```python
+import asyncio
+from inopyutils import InoCsvHelper
+
+rows = [{"id": 2, "name": "Bob"}, {"id": 1, "name": "Alice"}]
+
+async def main():
+    await InoCsvHelper.save_csv_to_file_async(rows, "people.csv")
+    res = await InoCsvHelper.read_csv_from_file_async("people.csv")
+    print(res["data"]["headers"], len(res["data"]["rows"]))
+
+    # In-memory utilities
+    headers = InoCsvHelper.get_headers(rows)
+    first = InoCsvHelper.get_row(rows, 0)
+    ids = InoCsvHelper.get_column(rows, "id")
+    sorted_rows = InoCsvHelper.sort_rows(rows, by=["name", "id"])
 
 asyncio.run(main())
 ```
 
 ---
 
-### 🤖 CivitAI Integration (`InoCivitHelper`)
-Async helper for fetching CivitAI model metadata and downloading model files with SHA-256 verification.
+### File Management (`InoFileHelper`)
 
-**Features:**
-- **Model Metadata** - Fetch model and model-version details from CivitAI APIs
-- **Verified Downloads** - Validate local/remote SHA-256 hashes and skip already verified files
-- **Resume Support** - Uses `InoHttpHelper.download()` with resume and multi-connection support
+File and folder operations: zip/unzip, copy with rename, move, remove, count, media validation, string-to-file, SHA-256 hashing.
+
+```python
+import asyncio
+from inopyutils import InoFileHelper
+from pathlib import Path
+
+async def main():
+    # ZIP compression
+    await InoFileHelper.zip(
+        to_zip=Path("source_folder"),
+        path_to_save=Path("archives"),
+        zip_file_name="backup.zip",
+        compression_level=6,
+    )
+
+    # Copy and rename files
+    await InoFileHelper.copy_files(
+        from_path=Path("source"),
+        to_path=Path("processed"),
+        rename_files=True,
+        prefix_name="File",
+    )
+
+    # File utilities
+    count = await InoFileHelper.count_files(Path("folder"), recursive=True)
+    last = InoFileHelper.get_last_file(Path("folder"))
+    next_name = InoFileHelper.increment_batch_name("Batch_001")  # "Batch_002"
+
+    # SHA-256 hash
+    sha = await InoFileHelper.get_file_hash_sha_256(Path("file.bin"))
+    print(sha["sha"])
+
+asyncio.run(main())
+```
+
+---
+
+### Media Processing (`InoMediaHelper`)
+
+Image validation/conversion via Pillow (HEIF/HEIC supported). Video conversion via FFmpeg with resolution and FPS capping.
+
+```python
+import asyncio
+from inopyutils import InoMediaHelper
+from pathlib import Path
+
+async def main():
+    # Image: fix EXIF rotation, resize, convert to JPEG
+    res = await InoMediaHelper.image_validate_pillow(
+        input_path=Path("photo.heic"),
+        output_path=Path("converted.jpg"),
+        max_res=2048,
+        jpg_quality=85,
+    )
+
+    # Video: convert to MP4, cap resolution and FPS
+    res = await InoMediaHelper.video_convert_ffmpeg(
+        input_path=Path("input.mov"),
+        output_path=Path("optimized.mp4"),
+        change_res=True, max_res=1920,
+        change_fps=True, max_fps=30,
+    )
+
+    # Extract a frame from video
+    res = await InoMediaHelper.video_extract_frame(
+        input_path=Path("video.mp4"),
+        output_path=Path("frame.jpg"),
+    )
+
+asyncio.run(main())
+```
+
+---
+
+### Audio Processing (`InoAudioHelper`)
+
+Audio utilities for raw PCM: transcode to OGG/Opus or WAV, decode any format to PCM, chunk for streaming, estimate duration, generate silence. Requires FFmpeg.
+
+```python
+import asyncio
+from inopyutils import InoAudioHelper
+
+async def main():
+    with open("audio.ogg", "rb") as f:
+        ogg_bytes = f.read()
+
+    # Decode to raw PCM
+    dec = await InoAudioHelper.audio_to_raw_pcm(ogg_bytes, rate=16000, channel=1)
+    pcm = dec["data"]
+
+    # Transcode PCM to OGG/Opus
+    enc = await InoAudioHelper.transcode_raw_pcm(
+        pcm, output="ogg", codec="libopus", rate=16000, channel=1,
+    )
+
+    # Chunk for streaming
+    chunks = await InoAudioHelper.chunks_raw_pcm(pcm, chunk_size=3200)
+
+    # Utilities (no FFmpeg needed)
+    seconds = InoAudioHelper.get_audio_duration_from_text("Hello world", wpm=160.0)
+    silence = InoAudioHelper.get_empty_audio_pcm_bytes(duration=2, rate=16000, channel=1)
+
+asyncio.run(main())
+```
+
+---
+
+### Thumbnail Generation (`InoThumbnailHelper`)
+
+Generate square JPEG thumbnails at multiple sizes. Center-crop or pad with blurred background. Strips EXIF metadata.
 
 ```python
 import asyncio
 from pathlib import Path
-from inopyutils.civitai_helper import InoCivitHelper
+from inopyutils import InoThumbnailHelper
+
+# Sync
+res = InoThumbnailHelper.image_generate_square_thumbnails(
+    image_path=Path("photo.jpg"),
+    output_dir=Path("thumbnails/"),
+    sizes=(256, 512, 1024),
+    quality=85,
+    crop=False,  # True: center-crop, False: blurred background padding
+)
+
+# Async
+async def main():
+    res = await InoThumbnailHelper.image_generate_square_thumbnails_async(
+        image_path=Path("photo.heic"),
+        output_dir=Path("thumbnails/"),
+        sizes=(256, 768),
+        crop=True,
+    )
+
+asyncio.run(main())
+```
+
+---
+
+### MongoDB Helper (`InoMongoHelper`)
+
+Async MongoDB helper wrapping Motor. Initialize once, use everywhere. Auto-converts `_id` between str and ObjectId.
+
+```python
+import asyncio
+from inopyutils import InoMongoHelper
+
+mongo = InoMongoHelper()
+
+async def main():
+    await mongo.connect(
+        uri="mongodb://localhost:27017",
+        db_name="mydb",
+        check_connection=True,
+    )
+
+    # CRUD
+    res = await mongo.insert_one("users", {"name": "Ann"})
+    user = await mongo.find_one("users", {"_id": res["inserted_id"]})
+    await mongo.update_one("users", {"_id": res["inserted_id"]}, {"$set": {"name": "Anna"}})
+    await mongo.delete_one("users", {"_id": res["inserted_id"]})
+
+    await mongo.close()
+
+asyncio.run(main())
+```
+
+---
+
+### CivitAI Integration (`InoCivitHelper`)
+
+Async helper for fetching CivitAI model metadata and downloading model files with SHA-256 verification and multi-connection resume support.
+
+```python
+import asyncio
+from pathlib import Path
+from inopyutils import InoCivitHelper
 
 async def main():
     civit = InoCivitHelper(token="your_civitai_token")
@@ -194,327 +388,30 @@ async def main():
 asyncio.run(main())
 ```
 
----
-
-### 📁 File Management (`InoFileHelper`)
-Robust file and folder operations with advanced features for batch processing, archiving, and media validation.
-
-**Features:**
-- **Smart Archiving** - ZIP compression/extraction with customizable settings
-- **Batch Processing** - Automatic batch naming and file organization
-- **Safe Operations** - Move, copy, remove with comprehensive safety checks
-- **Media Validation** - Validate and convert image/video files with format support
-- **Recursive Operations** - Deep folder analysis and processing
-
-```python
-from inopyutils import InoFileHelper
-from pathlib import Path
-
-# Create compressed archives (synchronous)
-InoFileHelper.zip(
-    to_zip=Path("source_folder"),
-    path_to_save=Path("archives"),
-    zip_file_name="backup.zip",
-    compression_level=6,
-    include_root=False
-)
-
-# Batch file operations with smart naming
-InoFileHelper.copy_files(
-    from_path=Path("source"),
-    to_path=Path("processed"),
-    rename_files=True,
-    prefix_name="Processed_",
-    iterate_subfolders=True
-)
-
-# File analysis and utilities
-file_count = InoFileHelper.count_files(Path("folder"), recursive=True)
-latest_file = InoFileHelper.get_last_file(Path("folder"))
-batch_name = InoFileHelper.increment_batch_name("Batch_001")  # "Batch_002"
-
-# Media validation and conversion (synchronous)
-InoFileHelper.validate_files(
-    input_path=Path("media_folder"),
-    include_image=True,
-    include_video=True,
-    image_valid_exts=['.jpg', '.png', '.heic'],
-    video_valid_exts=['.mp4', '.mov']
-)
-```
+Token can also be set via `CIVITAI_TOKEN` environment variable.
 
 ---
 
-### 🎨 Media Processing (`InoMediaHelper`)
-Professional-grade media processing with FFmpeg integration and Pillow-based image manipulation.
+### Configuration Management (`InoConfigHelper`)
 
-**Features:**
-- **Video Processing** - FFmpeg-based conversion with resolution/FPS control
-- **Image Processing** - Pillow-based validation, resizing, format conversion
-- **HEIF/HEIC Support** - Native support for modern image formats
-- **Quality Control** - Configurable compression and resolution limits
-- **Batch Operations** - Process multiple files efficiently
-
-```python
-import asyncio
-from inopyutils import InoMediaHelper
-from pathlib import Path
-
-async def main():
-    # Advanced image processing
-    res1 = await InoMediaHelper.image_validate_pillow(
-        input_path=Path("photo.heic"),
-        output_path=Path("converted.jpg"),
-        max_res=2048,
-        jpg_quality=85,
-    )
-    print(res1)
-
-    # Video processing with quality control
-    res2 = await InoMediaHelper.video_convert_ffmpeg(
-        input_path=Path("input.mov"),
-        output_path=Path("optimized.mp4"),
-        change_res=True,
-        max_res=1920,
-        change_fps=True,
-        max_fps=30
-    )
-    print(res2)
-
-    # Video checks (synchronous helpers)
-    info = InoMediaHelper.validate_video_res_fps(Path("optimized.mp4"))
-    fps = InoMediaHelper.get_video_fps(Path("optimized.mp4"))
-    print(info, fps)
-
-asyncio.run(main())
-```
-
----
-
-### 🔊 Audio Processing (`InoAudioHelper`)
-High-level audio utilities for working with raw PCM streams and common container formats.
-
-**Features:**
-- **PCM Transcoding** - Convert raw PCM bytes to OGG/Opus or WAV with codec and quality controls
-- **Decode to PCM** - Turn common audio bytes (e.g., OGG/MP3/WAV) into raw PCM for streaming/processing
-- **Chunking** - Split PCM into fixed-size chunks for streaming to APIs
-- **Duration Estimation** - Estimate speech duration from text (WPM-based)
-- **Silence Generation** - Generate silent PCM buffers for padding or composition
-
-```python
-import asyncio
-from inopyutils import InoAudioHelper
-
-async def main():
-    # Load an audio file as bytes (example OGG)
-    with open("audio.ogg", "rb") as f:
-        ogg_bytes = f.read()
-
-    # Decode audio bytes to raw PCM (s16le, 16kHz, mono)
-    dec = await InoAudioHelper.audio_to_raw_pcm(
-        ogg_bytes,
-        to_format="s16le",
-        rate=16000,
-        channel=1,
-    )
-    assert dec["success"], dec["error_code"]
-    pcm_bytes = dec["data"]
-
-    # Transcode PCM to OGG/Opus with VOIP application profile
-    enc = await InoAudioHelper.transcode_raw_pcm(
-        pcm_bytes,
-        output="ogg",
-        codec="libopus",
-        to_format="s16le",
-        application="voip",
-        rate=16000,
-        channel=1,
-    )
-    assert enc["success"], enc["error_code"]
-    ogg_opus_bytes = enc["data"]
-
-    # Stream PCM in fixed-size chunks (e.g., 3200 bytes ~100ms at 16kHz mono s16le)
-    ch = await InoAudioHelper.chunks_raw_pcm(pcm_bytes, chunk_size=3200)
-    for chunk in ch["chunks"]:
-        pass  # send chunk to your streaming endpoint
-
-    # Estimate TTS duration for pacing
-    seconds = InoAudioHelper.get_audio_duration_from_text("Hello world", wpm=160.0)
-
-    # Produce 2 seconds of silence PCM
-    silence_pcm = InoAudioHelper.get_empty_audio_pcm_bytes(
-        duration=2,
-        to_format="s16le",
-        rate=16000,
-        channel=1,
-    )
-
-asyncio.run(main())
-```
-
----
-
-### 🖼️ Thumbnail Generation (`InoThumbnailHelper`)
-Create square thumbnails from images with optional center-crop or smart blurred background padding. Always outputs JPEG files with a consistent naming scheme.
-
-Features:
-- Square thumbnails at multiple sizes in one call
-- Crop-to-square or pad with blurred background (no black bars)
-- Metadata stripped; outputs clean, optimized JPEGs
-
-```python
-from pathlib import Path
-from inopyutils import InoThumbnailHelper
-
-# Synchronous API
-out_files = InoThumbnailHelper.image_generate_square_thumbnails(
-    image_path=Path("tests/thumbnail_helper/assets/sample.jpg"),
-    output_dir=Path("tests/thumbnail_helper/thumbnails"),
-    sizes=(256, 512, 1024),
-    quality=85,
-    crop=False,  # if True: center-crops to square; if False: pads with blurred background
-)
-print(out_files)  # [".../sample_ino_t_256.jpg", ".../sample_ino_t_512.jpg", ...]
-
-# Async API
-import asyncio
-
-async def run_async():
-    out_async = await InoThumbnailHelper.image_generate_square_thumbnails_async(
-        image_path=Path("photo.heic"),
-        output_dir=Path("./thumbnails"),
-        sizes=(256, 768),
-        quality=80,
-        crop=True,
-    )
-    print(out_async)
-
-asyncio.run(run_async())
-```
-
----
-
-### 📷 Photo Metadata Profiles (`InoPhotoMetadata`)
-Lightweight dataclass for holding EXIF-like photo metadata with ready-made profiles.
-
-Features:
-- Pre-filled profiles: iphone, samsung (extendable)
-- Fields for camera/lens info, exposure settings, GPS, and more
-
-```python
-from inopyutils import InoPhotoMetadata
-
-# Start from a profile and override what you need
-meta = InoPhotoMetadata(profile="iphone")
-meta.iso_speed = 100
-meta.gps_latitude = 37.7749
-meta.gps_longitude = -122.4194
-
-# Use `meta` alongside your own EXIF writing pipeline if needed
-print(meta)
-```
-
----
-
-### 📊 CSV Utilities (`InoCsvHelper`)
-Async CSV read/write with convenient in-memory helpers for headers, rows, columns, and sorting.
-
-Features:
-- Async read/write using aiofiles
-- Stable header inference and ordered output
-- Utilities to access rows/columns and sort by multiple keys
-
-```python
-import asyncio
-from inopyutils import InoCsvHelper
-
-rows = [
-    {"id": 2, "name": "Bob"},
-    {"id": 1, "name": "Alice"},
-]
-
-async def main():
-    # Save CSV
-    res = await InoCsvHelper.save_csv_to_file_async(rows, "people.csv")
-    assert res["success"], res
-
-    # Read CSV
-    r2 = await InoCsvHelper.read_csv_from_file_async("people.csv")
-    print(r2["data"]["headers"], len(r2["data"]["rows"]))
-
-    # In-memory utilities
-    headers = InoCsvHelper.get_headers(rows)
-    first = InoCsvHelper.get_row(rows, 0)
-    ids = InoCsvHelper.get_column(rows, "id")
-    sorted_rows = InoCsvHelper.sort_rows(rows, by=["name", "id"])  # multi-key sort
-
-asyncio.run(main())
-```
-
----
-
-### 🍃 MongoDB Helper (`InoMongoHelper`)
-Typed, high-level async helper around Motor for common MongoDB operations. Initialize once, use everywhere.
-
-```python
-import asyncio
-from inopyutils import InoMongoHelper
-
-mongo = InoMongoHelper()
-
-async def main():
-    await mongo.connect(
-        uri="mongodb://localhost:27017",
-        db_name="mydb",
-        serverSelectionTimeoutMS=5_000,
-        check_connection=True,
-    )
-
-    # CRUD examples
-    user_id = await mongo.insert_one("users", {"name": "Ann"})
-    user = await mongo.find_one("users", {"_id": user_id})
-    await mongo.update_one("users", {"_id": user_id}, {"$set": {"name": "Anna"}})
-    await mongo.delete_one("users", {"_id": user_id})
-
-    await mongo.close()
-
-asyncio.run(main())
-```
-
-Key features:
-- Safe connection lifecycle (connect/close), optional startup ping
-- Automatic ObjectId <-> str conversion convenience
-- Common operations: find, insert, update, delete, aggregate, indexes
-
----
-
-### ⚙️ Configuration Management (`InoConfigHelper`)
-Robust INI-based configuration management with type safety and debugging capabilities.
-
-**Features:**
-- **Type-Safe Operations** - Dedicated methods for different data types
-- **Fallback Support** - Graceful handling of missing configuration values
-- **Debug Logging** - Optional verbose logging for troubleshooting
-- **Auto-Save** - Automatic persistence of configuration changes
+INI config file manager with type-safe access, fallbacks, and sync/async save.
 
 ```python
 import asyncio
 from inopyutils import InoConfigHelper
 
-# Initialize
-config = InoConfigHelper('config/application.ini')
+config = InoConfigHelper("config/app.ini")
 
-# Type-safe configuration access
-database_url = config.get('database', 'url', fallback='sqlite:///default.db')
-debug_mode = config.get_bool('app', 'debug', fallback=False)
+# Read with type safety
+url = config.get("database", "url", fallback="sqlite:///default.db")
+debug = config.get_bool("app", "debug", fallback=False)
 
-# Configuration updates (sync)
-config.set('api', 'endpoint', 'https://api.production.com')
-config.save()
+# Write (sync)
+config.set("api", "endpoint", "https://api.prod.com")
 
-# Or async set/save
+# Write (async)
 async def main():
-    await config.set_async('features', 'cache_enabled', True)
+    await config.set_async("features", "cache_enabled", True)
     await config.save_async()
 
 asyncio.run(main())
@@ -522,40 +419,9 @@ asyncio.run(main())
 
 ---
 
-### 🧰 Utility Helpers (`ino_ok`, `ino_err`, `ino_is_err`, `InoUtilHelper`)
-Small utility primitives for consistent result envelopes and common ID/hash helpers.
+### Structured Logging (`InoLogHelper`)
 
-**Features:**
-- **Result Envelopes** - `ino_ok()` / `ino_err()` standardize `{"success", "msg", ...}` dictionaries
-- **Error Predicate** - `ino_is_err()` works with helper result dictionaries
-- **General Utilities** - string hashing, time-based unique IDs, UTC+random base32 IDs
-
-```python
-from inopyutils import ino_ok, ino_err, ino_is_err, InoUtilHelper
-
-res = ino_ok("operation complete", value=42)
-print(res["success"], res["value"])
-
-if ino_is_err(ino_err("failed")):
-    print("error path")
-
-digest = InoUtilHelper.hash_string("hello", algo="sha256", length=16)
-uid = InoUtilHelper.generate_unique_id_by_time()
-stamp = InoUtilHelper.get_date_time_utc_base64()
-print(digest, uid, stamp)
-```
-
----
-
-### 📝 Structured Logging (`InoLogHelper`)
-Advanced logging system with automatic batching, categorization, and JSON-Lines format output.
-
-**Features:**
-- **JSONL Format** - Machine-readable structured logging
-- **Automatic Batching** - Smart log rotation and batch management
-- **Categorized Logging** - INFO, WARNING, ERROR categories with filtering
-- **Rich Context** - Log arbitrary data structures with messages
-- **Timestamped** - ISO format timestamps for precise tracking
+Async JSONL logger with automatic file rotation by size. Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL.
 
 ```python
 import asyncio
@@ -563,136 +429,86 @@ from inopyutils import InoLogHelper, LogType
 from pathlib import Path
 
 async def main():
-    # Initialize logger with automatic batching
-    logger = await InoLogHelper.create(Path("logs"), "MyApplication")
+    logger = await InoLogHelper.create(Path("logs"), "MyApp")
 
-    # Context-rich logging
     await logger.info(
-        msg="User login successful",
-        log_data={"user_id": 12345, "action": "login", "ip": "192.168.1.100"},
-        source="auth.login",
+        msg="User login",
+        log_data={"user_id": 123, "ip": "192.168.1.1"},
+        source="auth",
     )
 
-    # Categorized logging with .add
-    await logger.add(
-        LogType.ERROR,
-        msg="API endpoint timeout",
-        log_data={"error_code": 500, "endpoint": "/api/users", "duration_ms": 1200},
-        source="api.users",
-    )
-
-    # Batch processing logs
-    await logger.add(
-        LogType.INFO,
-        msg="Batch processing completed",
-        log_data={"processed": 150, "failed": 3, "batch_id": "batch_20241009"},
-        source="worker.batch",
+    await logger.error(
+        msg="Request failed",
+        log_data={"status": 500, "endpoint": "/api/users"},
+        source="api",
     )
 
 asyncio.run(main())
 ```
 
+Output files: `logs/MyApp_00001.inolog` (rotates at 10MB by default).
+
 ---
 
-## 🚀 Installation
+### Photo Metadata (`InoPhotoMetadata`)
 
-### PyPI Installation (Recommended)
-```bash
-pip install inopyutils
+Dataclass for EXIF-like photo metadata with pre-filled profiles (`iphone`, `samsung`).
+
+```python
+from inopyutils import InoPhotoMetadata
+
+meta = InoPhotoMetadata(profile="iphone")
+meta.iso_speed = 100
+meta.gps_latitude = 37.7749
+meta.gps_longitude = -122.4194
 ```
 
-### Development Installation
-```bash
-# Clone the repository
-git clone https://github.com/nobandegani/InoPyUtils.git
-cd InoPyUtils
+---
 
-# Install in development mode
-pip install -e .
+### Utility Helpers (`ino_ok`, `ino_err`, `ino_is_err`, `InoUtilHelper`)
 
-# Install with development dependencies
-pip install -e ".[dev]"
+Result envelope primitives used by all helpers, plus common ID/hash utilities.
+
+```python
+from inopyutils import ino_ok, ino_err, ino_is_err, InoUtilHelper
+
+res = ino_ok("done", value=42)
+print(res["success"], res["value"])  # True 42
+
+if ino_is_err(ino_err("failed")):
+    print("error path")
+
+digest = InoUtilHelper.hash_string("hello", algo="sha256", length=16)
+uid = InoUtilHelper.generate_unique_id_by_time()
+stamp = InoUtilHelper.get_date_time_utc_base64()
 ```
 
-### System Requirements
-- **Python**: 3.9 or higher
-- **Operating System**: Cross-platform (Windows, macOS, Linux)
-- **Optional**: FFmpeg (for audio transcoding/decoding and media conversion helpers)
+---
+
+## Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| pillow | Image processing |
+| pillow_heif | HEIF/HEIC format support |
+| aioboto3 | Async S3 operations |
+| aiofiles | Async file I/O |
+| aiohttp | Async HTTP client |
+| botocore / boto3 | AWS SDK |
+| motor | Async MongoDB driver |
+| inocloudreve | Cloud storage integration |
+
+**Optional:** FFmpeg — required for `InoMediaHelper` video conversion and `InoAudioHelper` audio transcoding.
 
 ---
 
-## 📦 Dependencies
+## Project Info
 
-### Core Dependencies
-- **pillow** - Image processing and manipulation
-- **pillow_heif** - HEIF/HEIC image format support
-- **aioboto3** - Asynchronous AWS S3 operations
-- **aiofiles** - Asynchronous file I/O operations
-- **aiohttp** - Asynchronous HTTP client used by InoHttpHelper
-- **botocore** - AWS core functionality and exception handling
-- **boto3** - AWS SDK for Python
-- **motor** - Async MongoDB driver used by InoMongoHelper
-- **inocloudreve** - Extended cloud storage integration
-
-### Optional Dependencies
-- **FFmpeg** - Required for audio transcoding/decoding and media conversion features (install separately)
-
----
-
-## 🛠️ Development & Contributing
-
-### Development Setup
-```bash
-# Clone and setup
-git clone https://github.com/nobandegani/InoPyUtils.git
-cd InoPyUtils
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install in development mode
-pip install -e ".[dev]"
-
-# Run tests
-python -m pytest tests/
-```
-
-### Contributing Guidelines
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Test** your changes thoroughly
-4. **Commit** your changes (`git commit -m 'Add amazing feature'`)
-5. **Push** to the branch (`git push origin feature/amazing-feature`)
-6. **Open** a Pull Request
-
----
-
-## 📊 Project Status
-
-- **Current Version**: 1.7.1
-- **Development Status**: Beta
-- **Python Support**: 3.9+
-- **License**: Mozilla Public License 2.0
-- **Maintenance**: Actively maintained
-
----
-
-## 📞 Support & Links
-
-- **Homepage**: [https://github.com/nobandegani/InoPyUtils](https://github.com/nobandegani/InoPyUtils)
-- **Issues**: [https://github.com/nobandegani/InoPyUtils/issues](https://github.com/nobandegani/InoPyUtils/issues)
-- **PyPI**: [https://pypi.org/project/inopyutils/](https://pypi.org/project/inopyutils/)
+- **Version**: 1.7.7
+- **Status**: Beta
+- **Python**: 3.9+
+- **License**: [Mozilla Public License 2.0](LICENSE)
+- **Homepage**: [github.com/nobandegani/InoPyUtils](https://github.com/nobandegani/InoPyUtils)
+- **Issues**: [github.com/nobandegani/InoPyUtils/issues](https://github.com/nobandegani/InoPyUtils/issues)
+- **PyPI**: [pypi.org/project/inopyutils](https://pypi.org/project/inopyutils/)
 - **Contact**: contact@inoland.net
-
----
-
-## 📄 License
-
-This project is licensed under the **Mozilla Public License 2.0** (MPL-2.0). See the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-Built with ❤️ by the Inoland. Special thanks to all contributors and the open-source community for their invaluable tools and libraries that make this project possible.
