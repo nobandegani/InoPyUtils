@@ -20,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 PYPROJECT = ROOT / "pyproject.toml"
+README = ROOT / "README.md"
 DIST = ROOT / "dist"
 ENV_FILE = ROOT / ".env"
 
@@ -66,6 +67,7 @@ def bump_patch(version: str) -> str:
 
 
 def write_version(new_version: str):
+    # Update pyproject.toml
     text = PYPROJECT.read_text(encoding="utf-8")
     updated = re.sub(
         r'^(version\s*=\s*)"[^"]+"',
@@ -75,6 +77,23 @@ def write_version(new_version: str):
         flags=re.MULTILINE,
     )
     PYPROJECT.write_text(updated, encoding="utf-8")
+
+    # Update README.md version badge and project info
+    if README.exists():
+        readme = README.read_text(encoding="utf-8")
+        # Badge: [![Version](https://img.shields.io/badge/version-X.Y.Z-green)]
+        readme = re.sub(
+            r'(badge/version-)[^-]+(-.+?\))',
+            f'\\g<1>{new_version}\\2',
+            readme,
+        )
+        # Project info: - **Version**: X.Y.Z
+        readme = re.sub(
+            r'(\*\*Version\*\*:\s*)\S+',
+            f'\\g<1>{new_version}',
+            readme,
+        )
+        README.write_text(readme, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +180,7 @@ def main():
     # Update version
     if new_version != current:
         write_version(new_version)
-        print(f"\nUpdated pyproject.toml: {current} → {new_version}")
+        print(f"\nUpdated pyproject.toml + README.md: {current} → {new_version}")
 
     # Build & upload
     clean_dist()
