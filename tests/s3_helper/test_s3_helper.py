@@ -330,6 +330,8 @@ async def run_tests():
 
         res = await s3.get_download_link(s3_root + "hello.txt", expires_in=300)
         check("get_download_link", res, lambda r: r.get("url", "").startswith("http"))
+        if res.get("success"):
+            print(f"         URL: {res['url']}")
 
         # ------------------------------------------------------------------
         # 13. Get presigned download link (as attachment)
@@ -347,6 +349,8 @@ async def run_tests():
             res,
             lambda r: r.get("url", "").startswith("http") and r.get("filename") == "custom_hello.txt",
         )
+        if res.get("success"):
+            print(f"         URL: {res['url']}")
 
         # ------------------------------------------------------------------
         # 14. Get folder download links
@@ -366,7 +370,7 @@ async def run_tests():
         if res.get("success"):
             print(f"         got {res['count']} links")
             for link in res.get("links", []):
-                print(f"         - {link['filename']}: {link['url'][:80]}...")
+                print(f"         - {link['filename']}: {link['url']}")
 
         # ------------------------------------------------------------------
         # 14b. Get folder download links (as_attachment)
