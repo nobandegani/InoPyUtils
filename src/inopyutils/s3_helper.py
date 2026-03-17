@@ -1535,6 +1535,85 @@ class InoS3Helper:
             f"get_download_link(s3://{bucket}/{norm_key})"
         )
 
+    async def get_folder_download_links(
+            self,
+            s3_folder_key: str,
+            bucket_name: Optional[str] = None,
+            expires_in: int = 3600,
+            as_attachment: bool = False,
+            response_content_type: Optional[str] = None,
+            max_keys: int = 1000,
+            recursive: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Generate pre-signed download links for all files under an S3 folder prefix.
+
+        Args:
+            s3_folder_key: S3 folder prefix (e.g. "photos/2024/")
+            bucket_name: S3 bucket name (uses default if not provided)
+            expires_in: Link expiration in seconds (default 3600 = 1 hour)
+            as_attachment: If True, sets Content-Disposition to attachment for each link
+            response_content_type: Optional content type to force for all links
+            max_keys: Maximum number of objects to process
+            recursive: If True, include files in subfolders
+
+        Returns:
+            Dict with success, msg, links (list of dicts with url, s3_key, filename, content_type, content_length), count
+        """
+        list_result = await self.list_objects(
+            prefix=s3_folder_key,
+            bucket_name=bucket_name,
+            max_keys=max_keys,
+            recursive=recursive
+        )
+        if not list_result.get("success"):
+            return list_result
+
+        objects = list_result.get("objects", [])
+        if not objects:
+            bucket = bucket_name or self.bucket_name
+            norm_key = self._normalize_key(s3_folder_key)
+            return {
+                "success": True,
+                "msg": f"No files found under s3://{bucket}/{norm_key}",
+                "links": [],
+                "count": 0
+            }
+
+        links = []
+        errors = []
+        for obj in objects:
+            result = await self.get_download_link(
+                s3_key=obj["Key"],
+                bucket_name=bucket_name,
+                expires_in=expires_in,
+                as_attachment=as_attachment,
+                response_content_type=response_content_type
+            )
+            if result.get("success"):
+                links.append({
+                    "url": result["url"],
+                    "s3_key": result["s3_key"],
+                    "filename": result["filename"],
+                    "content_type": result.get("response_content_type"),
+                    "content_length": result.get("content_length"),
+                })
+            else:
+                errors.append({"s3_key": obj["Key"], "msg": result.get("msg", "unknown error")})
+
+        bucket = bucket_name or self.bucket_name
+        norm_key = self._normalize_key(s3_folder_key)
+        result = {
+            "success": True,
+            "msg": f"Generated {len(links)} download links for s3://{bucket}/{norm_key}",
+            "links": links,
+            "count": len(links),
+        }
+        if errors:
+            result["msg"] += f" ({len(errors)} failed)"
+            result["errors"] = errors
+        return result
+
     async def verify_folder_sync(
             self,
             s3_folder_key: str,

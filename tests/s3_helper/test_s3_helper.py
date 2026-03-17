@@ -332,7 +332,75 @@ async def run_tests():
         check("get_download_link", res, lambda r: r.get("url", "").startswith("http"))
 
         # ------------------------------------------------------------------
-        # 13. Verify single file
+        # 13. Get presigned download link (as attachment)
+        # ------------------------------------------------------------------
+        print("\n--- Presigned download link (as_attachment) ---")
+
+        res = await s3.get_download_link(
+            s3_root + "hello.txt",
+            expires_in=300,
+            as_attachment=True,
+            filename="custom_hello.txt",
+        )
+        check(
+            "get_download_link as_attachment",
+            res,
+            lambda r: r.get("url", "").startswith("http") and r.get("filename") == "custom_hello.txt",
+        )
+
+        # ------------------------------------------------------------------
+        # 14. Get folder download links
+        # ------------------------------------------------------------------
+        print("\n--- Folder download links ---")
+
+        res = await s3.get_folder_download_links(
+            s3_folder_key=folder_s3_key,
+            expires_in=300,
+        )
+        check(
+            "get_folder_download_links",
+            res,
+            lambda r: r.get("count", 0) == len(test_files)
+                       and all(link.get("url", "").startswith("http") for link in r.get("links", [])),
+        )
+        if res.get("success"):
+            print(f"         got {res['count']} links")
+            for link in res.get("links", []):
+                print(f"         - {link['filename']}: {link['url'][:80]}...")
+
+        # ------------------------------------------------------------------
+        # 14b. Get folder download links (as_attachment)
+        # ------------------------------------------------------------------
+        print("\n--- Folder download links (as_attachment) ---")
+
+        res = await s3.get_folder_download_links(
+            s3_folder_key=folder_s3_key,
+            expires_in=300,
+            as_attachment=True,
+        )
+        check(
+            "get_folder_download_links as_attachment",
+            res,
+            lambda r: r.get("count", 0) == len(test_files),
+        )
+
+        # ------------------------------------------------------------------
+        # 14c. Get folder download links (empty prefix)
+        # ------------------------------------------------------------------
+        print("\n--- Folder download links (empty folder) ---")
+
+        res = await s3.get_folder_download_links(
+            s3_folder_key=s3_root + "nonexistent_folder/",
+            expires_in=300,
+        )
+        check(
+            "get_folder_download_links empty",
+            res,
+            lambda r: r.get("count", 0) == 0 and r.get("links") == [],
+        )
+
+        # ------------------------------------------------------------------
+        # 15. Verify single file
         # ------------------------------------------------------------------
         print("\n--- Verify file ---")
 
@@ -346,7 +414,7 @@ async def run_tests():
             check("verify_file", res)
 
         # ------------------------------------------------------------------
-        # 14. Delete test objects
+        # 16. Delete test objects
         # ------------------------------------------------------------------
         print("\n--- Cleanup: delete test objects ---")
 
@@ -358,7 +426,7 @@ async def run_tests():
                 check(f"delete_object {key}", res)
 
         # ------------------------------------------------------------------
-        # 15. Confirm deleted
+        # 17. Confirm deleted
         # ------------------------------------------------------------------
         print("\n--- Confirm cleanup ---")
 
