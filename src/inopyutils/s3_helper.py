@@ -918,10 +918,14 @@ class InoS3Helper:
             return {
                 **err,
                 "total_remote_files": 0,
+                "total_local_files": 0,
                 "downloaded": 0,
+                "uploaded": 0,
                 "updated": 0,
+                "skipped_unchanged": 0,
                 "verified": 0,
                 "removed_local": 0,
+                "removed_remote": 0,
                 "failed": 0,
                 "errors": []
             }
@@ -1287,12 +1291,13 @@ class InoS3Helper:
                             "error_code": "UnknownVerificationState"
                         }
                         last_error: Optional[Exception] = None
+                        force_upload = False
 
                         for attempt in range(file_attempt_limit):
                             must_upload = True
 
-                            # Check if remote already matches
-                            if rel_key in remote_objects:
+                            # Check if remote already matches (skip on first attempt only if not forced)
+                            if not force_upload and rel_key in remote_objects:
                                 remote_obj = remote_objects[rel_key]
                                 remote_size = int(remote_obj.get("Size", 0))
                                 etag_raw = remote_obj.get("ETag")
@@ -1346,7 +1351,8 @@ class InoS3Helper:
                                         "attempts": attempt + 1,
                                     }
 
-                                # Verification failed, retry upload
+                                # Verification failed, force re-upload next attempt
+                                force_upload = True
                             except Exception as e:
                                 last_error = e
 
