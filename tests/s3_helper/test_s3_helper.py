@@ -324,7 +324,166 @@ async def run_tests():
         check("verify_folder_sync", res)
 
         # ------------------------------------------------------------------
-        # 12. Get presigned download link
+        # 12. sync_folder (sync_local=True: S3 -> local)
+        # ------------------------------------------------------------------
+        print("\n--- sync_folder (S3 -> local) ---")
+
+        sync_local_dir = LOCAL_DOWNLOAD_DIR / "sync_local"
+        sync_s3_key = s3_root + "sync_test/"
+
+        # Upload test files to S3 under sync_test/ prefix first
+        for rel_name, local_path in test_files.items():
+            s3_key = sync_s3_key + rel_name.replace("\\", "/")
+            await s3.upload_file(str(local_path), s3_key)
+
+        # 12a. Initial sync — should download all files
+        res = await s3.sync_folder(
+            s3_key=sync_s3_key,
+            local_folder_path=str(sync_local_dir),
+            sync_local=True,
+            concc=3,
+        )
+        check(
+            "sync_folder S3->local (initial)",
+            res,
+            lambda r: r.get("downloaded", 0) == len(test_files)
+                       and r.get("failed", -1) == 0
+                       and r.get("total_remote_files", 0) == len(test_files),
+        )
+
+        # Verify downloaded content matches
+        if res.get("success"):
+            for rel_name, local_upload_path in test_files.items():
+                dl_path = sync_local_dir / rel_name
+                if dl_path.exists():
+                    orig_hash = _sha256(local_upload_path)
+                    dl_hash = _sha256(dl_path)
+                    if orig_hash == dl_hash:
+                        passed += 1
+                        print(f"  [PASS] sync_local sha256 match {rel_name}")
+                    else:
+                        failed += 1
+                        print(f"  [FAIL] sync_local sha256 mismatch {rel_name}")
+                else:
+                    failed += 1
+                    print(f"  [FAIL] sync_local missing {rel_name}")
+
+        # 12b. Re-sync — everything should be skipped (unchanged)
+        res = await s3.sync_folder(
+            s3_key=sync_s3_key,
+            local_folder_path=str(sync_local_dir),
+            sync_local=True,
+            concc=3,
+        )
+        check(
+            "sync_folder S3->local (re-sync skip)",
+            res,
+            lambda r: r.get("skipped_unchanged", 0) == len(test_files)
+                       and r.get("downloaded", -1) == 0,
+        )
+
+        # 12c. Add a stale local file — sync should remove it
+        stale_file = sync_local_dir / "stale_extra.txt"
+        stale_file.write_text("I should be removed", encoding="utf-8")
+
+        res = await s3.sync_folder(
+            s3_key=sync_s3_key,
+            local_folder_path=str(sync_local_dir),
+            sync_local=True,
+            concc=3,
+        )
+        check(
+            "sync_folder S3->local (remove stale)",
+            res,
+            lambda r: r.get("removed_local", 0) >= 1
+                       and not stale_file.exists(),
+        )
+
+        # ------------------------------------------------------------------
+        # 13. sync_folder (sync_local=False: local -> S3)
+        # ------------------------------------------------------------------
+        print("\n--- sync_folder (local -> S3) ---")
+
+        sync_remote_key = s3_root + "sync_upload_test/"
+
+        # 13a. Initial sync — should upload all files
+        res = await s3.sync_folder(
+            s3_key=sync_remote_key,
+            local_folder_path=str(LOCAL_UPLOAD_DIR),
+            sync_local=False,
+            concc=3,
+        )
+        check(
+            "sync_folder local->S3 (initial)",
+            res,
+            lambda r: r.get("uploaded", 0) == len(test_files)
+                       and r.get("failed", -1) == 0
+                       and r.get("total_local_files", 0) == len(test_files),
+        )
+
+        # 13b. Re-sync — everything should be skipped (unchanged)
+        res = await s3.sync_folder(
+            s3_key=sync_remote_key,
+            local_folder_path=str(LOCAL_UPLOAD_DIR),
+            sync_local=False,
+            concc=3,
+        )
+        check(
+            "sync_folder local->S3 (re-sync skip)",
+            res,
+            lambda r: r.get("skipped_unchanged", 0) == len(test_files)
+                       and r.get("uploaded", -1) == 0,
+        )
+
+        # 13c. Upload an extra file to S3 that is not local — sync should remove it
+        extra_s3_key = sync_remote_key + "extra_remote.txt"
+        await s3.put_text("I should be removed", extra_s3_key)
+
+        res = await s3.sync_folder(
+            s3_key=sync_remote_key,
+            local_folder_path=str(LOCAL_UPLOAD_DIR),
+            sync_local=False,
+            concc=3,
+        )
+        check(
+            "sync_folder local->S3 (remove stale remote)",
+            res,
+            lambda r: r.get("removed_remote", 0) >= 1,
+        )
+
+        # Confirm the extra remote file was actually deleted
+        extra_exists = await s3.object_exists(extra_s3_key)
+        if extra_exists.get("exists") is False:
+            passed += 1
+            print(f"  [PASS] stale remote object deleted")
+        else:
+            failed += 1
+            print(f"  [FAIL] stale remote object still exists")
+
+        # 13d. Verify uploaded content by downloading and comparing hashes
+        sync_verify_dir = LOCAL_DOWNLOAD_DIR / "sync_upload_verify"
+        res = await s3.download_folder(
+            s3_folder_key=sync_remote_key,
+            local_folder_path=str(sync_verify_dir),
+        )
+        if res.get("success"):
+            for rel_name, local_upload_path in test_files.items():
+                dl_path = sync_verify_dir / rel_name
+                if dl_path.exists():
+                    orig_hash = _sha256(local_upload_path)
+                    dl_hash = _sha256(dl_path)
+                    if orig_hash == dl_hash:
+                        passed += 1
+                        print(f"  [PASS] sync_remote sha256 match {rel_name}")
+                    else:
+                        failed += 1
+                        print(f"  [FAIL] sync_remote sha256 mismatch {rel_name}")
+                else:
+                    failed += 1
+                    print(f"  [FAIL] sync_remote missing {rel_name}")
+
+        # ------------------------------------------------------------------
+        # 14. Get presigned download link
         # ------------------------------------------------------------------
         print("\n--- Presigned download link ---")
 
