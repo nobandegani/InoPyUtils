@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Read(//mnt/e/likeness/spark/python/**)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''src/inopyutils/s3_helper.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")"
     ]
   }
 }
