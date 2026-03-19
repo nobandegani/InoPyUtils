@@ -889,18 +889,24 @@ class InoS3Helper:
             bucket_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Robustly synchronize files from an S3 prefix to a local folder.
+        Robustly synchronize files between an S3 prefix and a local folder.
 
-        Behavior when sync_local=True:
+        Behavior when sync_local=True (S3 -> local):
         - List all remote files under the provided prefix
         - Download missing/changed local files
         - Verify downloaded/kept files using hash when possible (SHA256/MD5 via verify_file)
         - Remove local files that are not present remotely under that prefix
 
+        Behavior when sync_local=False (local -> S3):
+        - Scan all local files under the provided folder
+        - Upload missing/changed files to S3
+        - Verify uploaded files using hash when possible (SHA256/MD5 via verify_file)
+        - Remove remote objects that are not present locally
+
         Args:
-            s3_key: S3 key prefix to sync from
-            local_folder_path: Target local folder path
-            sync_local: If False, returns a non-destructive no-op result
+            s3_key: S3 key prefix to sync from/to
+            local_folder_path: Local folder path
+            sync_local: If True, sync S3 to local. If False, sync local to S3
             concc: Maximum concurrent file sync operations
             bucket_name: S3 bucket name (uses default if not provided)
 
@@ -937,19 +943,36 @@ class InoS3Helper:
             "sync_local": sync_local,
             "concc": concc,
             "total_remote_files": 0,
+            "total_local_files": 0,
             "downloaded": 0,
+            "uploaded": 0,
             "updated": 0,
             "skipped_unchanged": 0,
             "verified": 0,
             "removed_local": 0,
+            "removed_remote": 0,
             "failed": 0,
             "errors": []
         }
 
-        if not sync_local:
-            result["msg"] = "⚠️ sync_local=False: no local synchronization performed"
-            return result
+        if sync_local:
+            return await self._sync_remote_to_local(
+                bucket, prefix, local_folder, result, concc
+            )
+        else:
+            return await self._sync_local_to_remote(
+                bucket, prefix, local_folder, result, concc
+            )
 
+    async def _sync_remote_to_local(
+            self,
+            bucket: str,
+            prefix: str,
+            local_folder: Path,
+            result: Dict[str, Any],
+            concc: int
+    ) -> Dict[str, Any]:
+        """Internal: sync S3 prefix -> local folder (used when sync_local=True)."""
         max_concurrent = max(1, int(concc))
         file_attempt_limit = max(3, self.retries + 1)
         transfer_config = TransferConfig(
@@ -1019,7 +1042,6 @@ class InoS3Helper:
                         if not any(d.iterdir()):
                             d.rmdir()
                     except Exception:
-                        # Ignore cleanup races/permissions; sync result already reflects file-level status
                         pass
 
                 semaphore = asyncio.Semaphore(max_concurrent)
@@ -1048,7 +1070,6 @@ class InoS3Helper:
                             if local_file.exists() and local_file.is_file():
                                 local_size = local_file.stat().st_size
                                 if local_size == remote_size:
-                                    # If ETag appears to be plain MD5 (single-part), verify before skipping
                                     if etag and "-" not in etag:
                                         import hashlib
                                         h = hashlib.md5()
@@ -1061,7 +1082,6 @@ class InoS3Helper:
                                         if h.hexdigest() == etag:
                                             must_download = False
                                     else:
-                                        # Without a trustworthy remote hash, size match is the best pre-download signal
                                         must_download = False
 
                             try:
@@ -1091,7 +1111,6 @@ class InoS3Helper:
                                         "attempts": attempt + 1,
                                     }
 
-                                # verification failed: force re-download next round
                                 if local_file.exists():
                                     local_file.unlink(missing_ok=True)
 
@@ -1131,6 +1150,7 @@ class InoS3Helper:
                 tasks = [_sync_one(rel) for rel in sorted(remote_objects.keys())]
                 sync_results = await asyncio.gather(*tasks, return_exceptions=True)
 
+            local_folder_path = str(local_folder)
             for sync_res in sync_results:
                 if isinstance(sync_res, Exception):
                     result["failed"] += 1
@@ -1173,7 +1193,239 @@ class InoS3Helper:
                 logging.warning(result["msg"])
 
         except Exception as e:
+            local_folder_path = str(local_folder)
             error_msg = f"❌ Error syncing folder s3://{bucket}/{prefix} -> {local_folder_path}: {str(e)}"
+            logging.error(error_msg)
+            result["success"] = False
+            result["msg"] = error_msg
+            result["error_code"] = type(e).__name__
+            result["failed"] += 1
+            result["errors"].append(error_msg)
+
+        return result
+
+    async def _sync_local_to_remote(
+            self,
+            bucket: str,
+            prefix: str,
+            local_folder: Path,
+            result: Dict[str, Any],
+            concc: int
+    ) -> Dict[str, Any]:
+        """Internal: sync local folder -> S3 prefix (used when sync_local=False)."""
+        max_concurrent = max(1, int(concc))
+        file_attempt_limit = max(3, self.retries + 1)
+
+        try:
+            # Build local file map
+            local_files: Dict[str, Path] = {}
+            for file_path in local_folder.rglob("*"):
+                if file_path.is_file():
+                    rel = file_path.relative_to(local_folder)
+                    rel_norm = str(rel).replace("\\", "/")
+                    local_files[rel_norm] = file_path
+
+            result["total_local_files"] = len(local_files)
+
+            # List all remote objects under prefix
+            remote_objects: Dict[str, Dict[str, Any]] = {}
+            continuation_token = None
+
+            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+                while True:
+                    params: Dict[str, Any] = {
+                        "Bucket": bucket,
+                        "Prefix": prefix,
+                        "MaxKeys": 1000
+                    }
+                    if continuation_token:
+                        params["ContinuationToken"] = continuation_token
+
+                    response = await s3.list_objects_v2(**params)
+                    for obj in response.get("Contents", []):
+                        key = obj.get("Key", "")
+                        if not key or key.endswith("/"):
+                            continue
+                        rel_key = key[len(prefix):] if prefix else key
+                        rel_key = rel_key.replace("\\", "/")
+                        remote_objects[rel_key] = obj
+
+                    if not response.get("IsTruncated", False):
+                        break
+                    continuation_token = response.get("NextContinuationToken")
+
+                result["total_remote_files"] = len(remote_objects)
+
+                remote_rel_set = set(remote_objects.keys())
+                local_rel_set = set(local_files.keys())
+
+                # Remove remote objects not present locally
+                to_remove = sorted(remote_rel_set - local_rel_set)
+                for rel in to_remove:
+                    remote_key = remote_objects[rel].get("Key", "")
+                    try:
+                        await s3.delete_object(Bucket=bucket, Key=remote_key)
+                        result["removed_remote"] += 1
+                    except Exception as e:
+                        result["failed"] += 1
+                        msg = f"Failed to remove remote object s3://{bucket}/{remote_key}: {str(e)}"
+                        result["errors"].append(msg)
+                        logging.error(msg)
+
+                semaphore = asyncio.Semaphore(max_concurrent)
+
+                async def _upload_one(rel_key: str) -> Dict[str, Any]:
+                    async with semaphore:
+                        local_file = local_files[rel_key]
+                        s3_obj_key = prefix + rel_key
+                        local_size = local_file.stat().st_size
+                        uploaded_any = False
+                        updated_existing = rel_key in remote_objects
+                        last_verify_res: Dict[str, Any] = {
+                            "success": False,
+                            "msg": "Unknown verification state",
+                            "error_code": "UnknownVerificationState"
+                        }
+                        last_error: Optional[Exception] = None
+
+                        for attempt in range(file_attempt_limit):
+                            must_upload = True
+
+                            # Check if remote already matches
+                            if rel_key in remote_objects:
+                                remote_obj = remote_objects[rel_key]
+                                remote_size = int(remote_obj.get("Size", 0))
+                                etag_raw = remote_obj.get("ETag")
+                                etag = etag_raw.strip('"') if isinstance(etag_raw, str) else None
+
+                                if local_size == remote_size:
+                                    if etag and "-" not in etag:
+                                        import hashlib
+                                        h = hashlib.md5()
+                                        async with aiofiles.open(local_file, "rb") as f:  # type: ignore
+                                            while True:
+                                                chunk = await f.read(1024 * 1024)
+                                                if not chunk:
+                                                    break
+                                                h.update(chunk)
+                                        if h.hexdigest() == etag:
+                                            must_upload = False
+                                    else:
+                                        must_upload = False
+
+                            try:
+                                if must_upload:
+                                    extra_args: Dict[str, str] = {}
+                                    guess, _ = mimetypes.guess_type(str(local_file))
+                                    if guess:
+                                        extra_args["ContentType"] = guess
+                                    await s3.upload_file(
+                                        str(local_file),
+                                        bucket,
+                                        s3_obj_key,
+                                        ExtraArgs=extra_args if extra_args else None,
+                                        Config=self.transfer_config
+                                    )
+                                    uploaded_any = True
+
+                                verify_res = await self.verify_file(
+                                    local_file_path=str(local_file),
+                                    s3_key=s3_obj_key,
+                                    bucket_name=bucket,
+                                    use_md5=True,
+                                    use_sha256=True
+                                )
+                                last_verify_res = verify_res
+
+                                if verify_res.get("success", False):
+                                    return {
+                                        "relative_path": rel_key,
+                                        "uploaded": uploaded_any,
+                                        "updated": updated_existing and uploaded_any,
+                                        "verify": verify_res,
+                                        "attempts": attempt + 1,
+                                    }
+
+                                # Verification failed, retry upload
+                            except Exception as e:
+                                last_error = e
+
+                            if attempt < file_attempt_limit - 1:
+                                wait_time = min(30.0, (2 ** attempt) + random.uniform(0, 1))
+                                await asyncio.sleep(wait_time)
+
+                        if last_error is not None:
+                            return {
+                                "relative_path": rel_key,
+                                "uploaded": uploaded_any,
+                                "updated": updated_existing and uploaded_any,
+                                "verify": {
+                                    "success": False,
+                                    "msg": f"Failed after {file_attempt_limit} attempts: {str(last_error)}",
+                                    "error_code": type(last_error).__name__
+                                },
+                                "attempts": file_attempt_limit,
+                            }
+
+                        return {
+                            "relative_path": rel_key,
+                            "uploaded": uploaded_any,
+                            "updated": updated_existing and uploaded_any,
+                            "verify": {
+                                **last_verify_res,
+                                "msg": f"Failed verification after {file_attempt_limit} attempts: {last_verify_res.get('msg', 'Unknown error')}"
+                            },
+                            "attempts": file_attempt_limit,
+                        }
+
+                tasks = [_upload_one(rel) for rel in sorted(local_files.keys())]
+                sync_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for sync_res in sync_results:
+                if isinstance(sync_res, Exception):
+                    result["failed"] += 1
+                    msg = f"Sync task failed with exception: {str(sync_res)}"
+                    result["errors"].append(msg)
+                    logging.error(msg)
+                    continue
+
+                if sync_res.get("uploaded"):
+                    if sync_res.get("updated"):
+                        result["updated"] += 1
+                    else:
+                        result["uploaded"] += 1
+                else:
+                    result["skipped_unchanged"] += 1
+
+                verify_res = sync_res.get("verify", {})
+                if verify_res.get("success", False):
+                    result["verified"] += 1
+                else:
+                    result["failed"] += 1
+                    msg = f"Verification failed for {sync_res.get('relative_path')}: {verify_res.get('msg', 'Unknown error')}"
+                    result["errors"].append(msg)
+                    logging.error(msg)
+
+            result["success"] = result["failed"] == 0
+            local_folder_path = str(local_folder)
+            if result["success"]:
+                result["msg"] = (
+                    f"✅ Sync completed for {local_folder_path} -> s3://{bucket}/{prefix} "
+                    f"(local={result['total_local_files']}, uploaded={result['uploaded']}, "
+                    f"updated={result['updated']}, removed_remote={result['removed_remote']})"
+                )
+                logging.info(result["msg"])
+            else:
+                result["msg"] = (
+                    f"❌ Sync completed with failures for {local_folder_path} -> s3://{bucket}/{prefix}. "
+                    f"failed={result['failed']}, verified={result['verified']}/{result['total_local_files']}"
+                )
+                result["error_code"] = "PartialFailure"
+                logging.warning(result["msg"])
+
+        except Exception as e:
+            local_folder_path = str(local_folder)
+            error_msg = f"❌ Error syncing folder {local_folder_path} -> s3://{bucket}/{prefix}: {str(e)}"
             logging.error(error_msg)
             result["success"] = False
             result["msg"] = error_msg
