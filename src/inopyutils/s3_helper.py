@@ -1801,10 +1801,14 @@ class InoS3Helper:
             as_attachment: bool = False,
             response_content_type: Optional[str] = None,
             max_keys: int = 1000,
-            recursive: bool = True
+            recursive: bool = True,
+            concurrency: int = 20
     ) -> Dict[str, Any]:
         """
         Generate pre-signed download links for all files under an S3 folder prefix.
+
+        Uses metadata from the listing response directly and generates presigned URLs
+        in parallel batches, avoiding per-object head_object calls for faster execution.
 
         Args:
             s3_folder_key: S3 folder prefix (e.g. "photos/2024/")
@@ -1814,6 +1818,7 @@ class InoS3Helper:
             response_content_type: Optional content type to force for all links
             max_keys: Maximum number of objects to process
             recursive: If True, include files in subfolders
+            concurrency: Maximum number of concurrent presigned URL generations (default 20)
 
         Returns:
             Dict with success, msg, links (list of dicts with url, s3_key, filename, content_type, content_length), count
@@ -1838,32 +1843,65 @@ class InoS3Helper:
                 "count": 0
             }
 
+        bucket = bucket_name or self.bucket_name
+        norm_folder_key = self._normalize_key(s3_folder_key)
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _generate_link(obj: Dict[str, Any]) -> Dict[str, Any]:
+            """Generate a presigned URL for a single object using list metadata."""
+            async with semaphore:
+                obj_key = self._normalize_key(obj["Key"])
+                use_filename = Path(obj_key).name
+                # Determine content type from filename or fallback
+                chosen_content_type = response_content_type
+                if not chosen_content_type:
+                    guess, _ = mimetypes.guess_type(use_filename)
+                    if guess:
+                        chosen_content_type = guess
+
+                params: Dict[str, Any] = {"Bucket": bucket, "Key": obj_key}
+                if as_attachment and use_filename:
+                    params["ResponseContentDisposition"] = f"attachment; filename*=UTF-8''{quote(use_filename)}"
+                if chosen_content_type:
+                    params["ResponseContentType"] = chosen_content_type
+
+                try:
+                    async with self._require_session().client(
+                        "s3", endpoint_url=self.endpoint_url, config=self.config
+                    ) as s3:
+                        url = await s3.generate_presigned_url(
+                            "get_object", Params=params, ExpiresIn=expires_in
+                        )
+                    return {
+                        "success": True,
+                        "url": url,
+                        "s3_key": obj_key,
+                        "filename": use_filename,
+                        "content_type": chosen_content_type,
+                        "content_length": obj.get("Size", 0),
+                    }
+                except Exception as e:
+                    return {"success": False, "s3_key": obj_key, "msg": str(e)}
+
+        results = await asyncio.gather(*[_generate_link(obj) for obj in objects])
+
         links = []
         errors = []
-        for obj in objects:
-            result = await self.get_download_link(
-                s3_key=obj["Key"],
-                bucket_name=bucket_name,
-                expires_in=expires_in,
-                as_attachment=as_attachment,
-                response_content_type=response_content_type
-            )
-            if result.get("success"):
+        for r in results:
+            if r.get("success"):
                 links.append({
-                    "url": result["url"],
-                    "s3_key": result["s3_key"],
-                    "filename": result["filename"],
-                    "content_type": result.get("response_content_type"),
-                    "content_length": result.get("content_length"),
+                    "url": r["url"],
+                    "s3_key": r["s3_key"],
+                    "filename": r["filename"],
+                    "content_type": r.get("content_type"),
+                    "content_length": r.get("content_length"),
                 })
             else:
-                errors.append({"s3_key": obj["Key"], "msg": result.get("msg", "unknown error")})
+                errors.append({"s3_key": r.get("s3_key", "unknown"), "msg": r.get("msg", "unknown error")})
 
-        bucket = bucket_name or self.bucket_name
-        norm_key = self._normalize_key(s3_folder_key)
         result = {
             "success": True,
-            "msg": f"Generated {len(links)} download links for s3://{bucket}/{norm_key}",
+            "msg": f"Generated {len(links)} download links for s3://{bucket}/{norm_folder_key}",
             "links": links,
             "count": len(links),
         }
