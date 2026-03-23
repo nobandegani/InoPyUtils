@@ -415,6 +415,53 @@ class InoFileHelper:
             return ino_err(f"❌ Failed to save string to '{save_path}': {e}")
 
     @staticmethod
+    async def remove_duplicate_files(input_path: Path, recursive: bool = True, chunk_size: int = 8) -> dict:
+        """
+        Remove duplicate files in `input_path` by comparing SHA-256 hashes.
+        Keeps the first file found for each hash and deletes the rest.
+
+        Args:
+            input_path: Directory to scan for duplicates.
+            recursive: If True, scan subdirectories as well (default True).
+            chunk_size: Read chunk size in MB for hashing (default 8).
+
+        Returns:
+            dict with success, msg, removed (list of removed file paths),
+            and removed_count (int).
+        """
+        if not input_path.exists() or not input_path.is_dir():
+            return ino_err(f"❌ Path not found or not a directory: {input_path}")
+
+        def _find_and_remove():
+            seen = {}
+            removed = []
+            files = sorted(input_path.rglob("*")) if recursive else sorted(input_path.iterdir())
+            for file in files:
+                if not file.is_file():
+                    continue
+                sha256 = hashlib.sha256()
+                with file.open("rb") as f:
+                    for chunk in iter(lambda: f.read(chunk_size * 1024 * 1024), b""):
+                        sha256.update(chunk)
+                digest = sha256.hexdigest()
+                if digest in seen:
+                    file.unlink()
+                    removed.append(str(file))
+                else:
+                    seen[digest] = file
+            return removed
+
+        try:
+            removed = await asyncio.to_thread(_find_and_remove)
+            return ino_ok(
+                f"✅ Removed {len(removed)} duplicate(s) from '{input_path}'",
+                removed=removed,
+                removed_count=len(removed)
+            )
+        except Exception as e:
+            return ino_err(f"❌ Failed to remove duplicates: {e}")
+
+    @staticmethod
     async def get_file_hash_sha_256(file_path: Path, chunk_size:int = 8) -> dict:
         """
         Asynchronously calculate the SHA-256 hash of the given file.
