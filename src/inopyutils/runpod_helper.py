@@ -36,12 +36,37 @@ class InoRunpodHelper:
                 response = await http_client.post(
                     url=url,
                     headers=headers,
-                    json=payload
+                    json=payload,
+                    json_response=True
                 )
 
             if ino_is_err(response):
-                return response
+                return ino_err(response.get("msg", "request failed"),
+                               status_code=response.get("status_code"))
 
-            return ino_ok("runsync complete", data=response.get("data"))
+            data = response.get("data", {})
+            status = data.get("status")
+
+            if status != "COMPLETED":
+                return ino_err(f"runsync not completed: {status}",
+                               error_code=data.get("error"),
+                               status=status)
+
+            output = data.get("output", [])
+            first_output = output[0] if isinstance(output, list) and output else output
+
+            choices = first_output.get("choices") if isinstance(first_output, dict) else None
+            usage = first_output.get("usage") if isinstance(first_output, dict) else None
+
+            return ino_ok("runsync complete",
+                          id=data.get("id"),
+                          status=status,
+                          delay_time=data.get("delayTime"),
+                          execution_time=data.get("executionTime"),
+                          response="",
+                          choices=choices,
+                          usage=usage,
+                          output = output,
+                          )
         except Exception as e:
             return ino_err(f"runsync failed: {e}")

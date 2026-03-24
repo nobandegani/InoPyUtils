@@ -98,7 +98,7 @@ async def run_tests():
         return
 
     # ------------------------------------------------------------------
-    # 1. Basic text chat completion
+    # 1. Basic text chat completion — success fields
     # ------------------------------------------------------------------
     print("\n--- Basic runsync (text) ---")
 
@@ -110,9 +110,20 @@ async def run_tests():
         temperature=0.1,
         max_tokens=64,
     )
-    check("runsync text", res, lambda r: r.get("data") is not None)
+    check("runsync text", res)
+
     if res.get("success"):
-        print(f"         response data: {res.get('data')}")
+        check_bool("has id", res.get("id") is not None, f"id={res.get('id')}")
+        check_bool("status is COMPLETED", res.get("status") == "COMPLETED", f"status={res.get('status')}")
+        check_bool("has delay_time", res.get("delay_time") is not None, f"delay_time={res.get('delay_time')}")
+        check_bool("has execution_time", res.get("execution_time") is not None, f"execution_time={res.get('execution_time')}")
+        check_bool("has output", res.get("output") is not None, f"output={res.get('output')}")
+        check_bool("has choices", isinstance(res.get("choices"), list) and len(res["choices"]) > 0,
+                    f"choices={res.get('choices')}")
+        check_bool("has usage", res.get("usage") is not None, f"usage={res.get('usage')}")
+        print(f"         choices: {res.get('choices')}")
+        print(f"         usage: {res.get('usage')}")
+        print(f"         delay_time: {res.get('delay_time')}ms, execution_time: {res.get('execution_time')}ms")
 
     # ------------------------------------------------------------------
     # 2. Custom sampling params
@@ -129,10 +140,10 @@ async def run_tests():
     )
     check("runsync custom params", res)
     if res.get("success"):
-        print(f"         response data: {res.get('data')}")
+        print(f"         choices: {res.get('choices')}")
 
     # ------------------------------------------------------------------
-    # 3. Invalid API key — should return error
+    # 3. Invalid API key — should return ino_err with status_code
     # ------------------------------------------------------------------
     print("\n--- Invalid API key ---")
 
@@ -145,9 +156,12 @@ async def run_tests():
     )
     check_bool("invalid key returns error", not res.get("success"),
                f"expected failure but got: {res}")
+    check_bool("error has status_code", res.get("status_code") is not None or res.get("error_code") is not None,
+               f"result={res}")
+    print(f"         msg: {res.get('msg')}")
 
     # ------------------------------------------------------------------
-    # 4. Invalid URL — should return error
+    # 4. Invalid URL — should return ino_err
     # ------------------------------------------------------------------
     print("\n--- Invalid endpoint URL ---")
 
@@ -160,6 +174,7 @@ async def run_tests():
     )
     check_bool("invalid endpoint returns error", not res.get("success"),
                f"expected failure but got: {res}")
+    print(f"         msg: {res.get('msg')}")
 
     # ------------------------------------------------------------------
     # Summary
