@@ -53,20 +53,25 @@ class InoRunpodHelper:
                                status=status)
 
             output = data.get("output", [])
-            first_output = output[0] if isinstance(output, list) and output else output
+            first_output = output[0] if isinstance(output, list) and output else {}
 
-            choices = first_output.get("choices") if isinstance(first_output, dict) else None
+            choices = first_output.get("choices", []) if isinstance(first_output, dict) else []
             usage = first_output.get("usage") if isinstance(first_output, dict) else None
+
+            # Extract first choice -> first token as the response text
+            first_choice = choices[0] if choices else {}
+            tokens = first_choice.get("tokens", []) if isinstance(first_choice, dict) else []
+            response_text = tokens[0] if tokens else ""
 
             return ino_ok("runsync complete",
                           id=data.get("id"),
                           status=status,
                           delay_time=data.get("delayTime"),
                           execution_time=data.get("executionTime"),
-                          response="",
+                          response=response_text,
                           choices=choices,
                           usage=usage,
-                          output = output,
+                          output=output,
                           )
         except Exception as e:
             return ino_err(f"runsync failed: {e}")
