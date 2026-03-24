@@ -5,7 +5,8 @@
       "Read(//mnt/e/likeness/spark/python/**)",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''src/inopyutils/s3_helper.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''tests/s3_helper/test_s3_helper.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
-      "Bash(python tests/file_helper/test_file_helper.py)"
+      "Bash(python tests/file_helper/test_file_helper.py)",
+      "WebFetch(domain:docs.runpod.io)"
     ]
   }
 }
