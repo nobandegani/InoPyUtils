@@ -1,20 +1,40 @@
+import base64
+from typing import Union
+
 from .http_helper import InoHttpHelper
 from .util_helper import ino_ok, ino_err, ino_is_err
 
 class InoRunpodHelper:
     @staticmethod
-    async def serverless_vllm_runsync(url: str, api_key: str, system_prompt: str, user_prompt: str, temperature: float = 0.7, max_tokens: int = 1024, image_url: str = None) -> dict:
-        """Send a synchronous chat completion request to a RunPod serverless vLLM endpoint."""
+    async def serverless_vllm_runsync(
+            url: str,
+            api_key: str,
+            system_prompt: str,
+            user_prompt: str,
+            temperature: float = 0.7,
+            max_tokens: int = 1024,
+            image: Union[str, bytes, None] = None
+    ) -> dict:
+        """Send a synchronous chat completion request to a RunPod serverless vLLM endpoint.
+
+        Args:
+            image: Image as a URL string or raw bytes (JPEG/PNG). Bytes are base64-encoded as a data URI.
+        """
         try:
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
             }
 
-            if image_url:
+            if image is not None:
+                if isinstance(image, bytes):
+                    b64 = base64.b64encode(image).decode("ascii")
+                    image_uri = f"data:image/jpeg;base64,{b64}"
+                else:
+                    image_uri = image
                 user_content = [
                     {"type": "text", "text": user_prompt},
-                    {"type": "image_url", "image_url": {"url": image_url}}
+                    {"type": "image_url", "image_url": {"url": image_uri}}
                 ]
             else:
                 user_content = user_prompt
