@@ -121,7 +121,9 @@ async def run_tests():
         check_bool("has choices", isinstance(res.get("choices"), list) and len(res["choices"]) > 0,
                     f"choices={res.get('choices')}")
         check_bool("has usage", res.get("usage") is not None, f"usage={res.get('usage')}")
-        print(f"         choices: {res.get('choices')}")
+        check_bool("has response text", isinstance(res.get("response"), str) and len(res["response"]) > 0,
+                    f"response={res.get('response')}")
+        print(f"         response: {res.get('response')}")
         print(f"         usage: {res.get('usage')}")
         print(f"         delay_time: {res.get('delay_time')}ms, execution_time: {res.get('execution_time')}ms")
 
@@ -143,7 +145,56 @@ async def run_tests():
         print(f"         choices: {res.get('choices')}")
 
     # ------------------------------------------------------------------
-    # 3. Invalid API key — should return ino_err with status_code
+    # 3. Image input as bytes (local file)
+    # ------------------------------------------------------------------
+    print("\n--- Image input (bytes) ---")
+
+    image_path = Path(__file__).resolve().parent / "image.jpg"
+    if image_path.exists():
+        image_bytes = image_path.read_bytes()
+        res = await InoRunpodHelper.serverless_vllm_runsync(
+            url=ENDPOINT_URL,
+            api_key=API_KEY,
+            system_prompt="You are a helpful assistant. Reply in one short sentence.",
+            user_prompt="Describe this image briefly.",
+            temperature=0.1,
+            max_tokens=128,
+            image=image_bytes,
+        )
+        check("runsync image bytes", res)
+        if res.get("success"):
+            check_bool("image bytes has response", isinstance(res.get("response"), str) and len(res["response"]) > 0,
+                        f"response={res.get('response')}")
+            print(f"         response: {res.get('response')}")
+        else:
+            print(f"         msg: {res.get('msg')}")
+    else:
+        print(f"  [SKIP] image.jpg not found at {image_path}")
+
+    # ------------------------------------------------------------------
+    # 4. Image input as URL string
+    # ------------------------------------------------------------------
+    print("\n--- Image input (URL) ---")
+
+    res = await InoRunpodHelper.serverless_vllm_runsync(
+        url=ENDPOINT_URL,
+        api_key=API_KEY,
+        system_prompt="You are a helpful assistant. Reply in one short sentence.",
+        user_prompt="Describe this image briefly.",
+        temperature=0.1,
+        max_tokens=128,
+        image="https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png",
+    )
+    check("runsync image url", res)
+    if res.get("success"):
+        check_bool("image url has response", isinstance(res.get("response"), str) and len(res["response"]) > 0,
+                    f"response={res.get('response')}")
+        print(f"         response: {res.get('response')}")
+    else:
+        print(f"         msg: {res.get('msg')}")
+
+    # ------------------------------------------------------------------
+    # 5. Invalid API key — should return ino_err with status_code
     # ------------------------------------------------------------------
     print("\n--- Invalid API key ---")
 
@@ -161,7 +212,7 @@ async def run_tests():
     print(f"         msg: {res.get('msg')}")
 
     # ------------------------------------------------------------------
-    # 4. Invalid URL — should return ino_err
+    # 6. Invalid URL — should return ino_err
     # ------------------------------------------------------------------
     print("\n--- Invalid endpoint URL ---")
 
