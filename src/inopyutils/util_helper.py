@@ -39,14 +39,15 @@ class InoUtilHelper:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def get_date_time_utc_base64(random_token:int = 2) -> str:
+    def get_date_time_utc_base64(random_token: int = 4) -> str:
         """
         Generates a unique, base32-encoded timestamp string combined with a random token.
-        The timestamp is based on the current UTC date and time down to milliseconds,
+        The timestamp is based on the current UTC date and time down to nanoseconds,
         and the random token adds additional entropy for uniqueness.
         """
         now = datetime.now(timezone.utc)
-        ts_str = now.strftime("%Y%m%d%H%M%S") + f"{now.microsecond // 1000:03d}"
+        ns = time.time_ns() % 1_000_000_000
+        ts_str = now.strftime("%Y%m%d%H%M%S") + f"{ns:09d}"
 
         n = int(ts_str)
         b = n.to_bytes((n.bit_length() + 7) // 8 or 1, "big")
