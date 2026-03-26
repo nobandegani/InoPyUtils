@@ -122,7 +122,6 @@ def build():
         size_kb = f.stat().st_size / 1024
         print(f"  {f.name}  ({size_kb:.1f} KB)")
 
-
 def upload(token: str):
     print("\n--- Uploading to PyPI ---")
     env = os.environ.copy()
