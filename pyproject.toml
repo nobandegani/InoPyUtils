@@ -36,7 +36,8 @@ dependencies = [
     "aiohttp>=3.13.2",
     "botocore>=1.39.11",
     "boto3>=1.39.11",
-    "motor>=3.7.1"
+    "motor>=3.7.1",
+    "openai>=1.68.0"
 ]
 
 [tool.setuptools.packages.find]

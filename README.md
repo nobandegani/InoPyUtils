@@ -392,6 +392,79 @@ Token can also be set via `CIVITAI_TOKEN` environment variable.
 
 ---
 
+### OpenAI-Compatible Chat (`InoOpenAIHelper`)
+
+Async chat completions client using the OpenAI SDK. Works with any OpenAI-compatible endpoint (RunPod, vLLM, Ollama, OpenAI, etc.). Supports vision/image input.
+
+```python
+import asyncio
+from inopyutils import InoOpenAIHelper
+
+async def main():
+    # Text chat
+    res = await InoOpenAIHelper.chat_completions(
+        api_key="your_api_key",
+        base_url="https://api.runpod.ai/v2/YOUR_ENDPOINT/openai/v1",
+        model="qwen3-vl-32b",
+        user_prompt="What is quantum computing?",
+        system_prompt="You are a helpful assistant. Reply concisely.",
+        temperature=0.7,
+        max_tokens=256,
+    )
+    if res["success"]:
+        print(res["response"])
+
+    # Vision with image
+    res = await InoOpenAIHelper.chat_completions(
+        api_key="your_api_key",
+        base_url="https://api.runpod.ai/v2/YOUR_ENDPOINT/openai/v1",
+        model="qwen3-vl-32b",
+        user_prompt="Describe this image.",
+        image="https://example.com/photo.jpg",  # URL or data:image/jpeg;base64,...
+    )
+
+asyncio.run(main())
+```
+
+---
+
+### RunPod Serverless vLLM (`InoRunpodHelper`)
+
+Async helper for RunPod serverless vLLM endpoints via the runsync API. Uses the OpenAI-compatible route for proper vision/multimodal support.
+
+```python
+import asyncio
+from inopyutils import InoRunpodHelper
+
+async def main():
+    # Text chat
+    res = await InoRunpodHelper.serverless_vllm_runsync(
+        url="https://api.runpod.ai/v2/YOUR_ENDPOINT/runsync",
+        api_key="your_runpod_api_key",
+        model="qwen3-vl-32b",
+        user_prompt="List 3 benefits of drinking water.",
+        system_prompt="You are a helpful assistant.",
+        temperature=0.3,
+        max_tokens=256,
+    )
+    if res["success"]:
+        print(res["response"])
+        print(f"Execution time: {res['execution_time']}ms")
+
+    # Vision with image
+    res = await InoRunpodHelper.serverless_vllm_runsync(
+        url="https://api.runpod.ai/v2/YOUR_ENDPOINT/runsync",
+        api_key="your_runpod_api_key",
+        model="qwen3-vl-32b",
+        user_prompt="What do you see in this image?",
+        image="data:image/jpeg;base64,/9j/4AAQ...",
+    )
+
+asyncio.run(main())
+```
+
+---
+
 ### Configuration Management (`InoConfigHelper`)
 
 INI config file manager with type-safe access, fallbacks, and sync/async save.
@@ -496,6 +569,7 @@ stamp = InoUtilHelper.get_date_time_utc_base64()
 | aiohttp | Async HTTP client |
 | botocore / boto3 | AWS SDK |
 | motor | Async MongoDB driver |
+| openai | OpenAI-compatible API client |
 | inocloudreve | Cloud storage integration |
 
 **Optional:** FFmpeg — required for `InoMediaHelper` video conversion and `InoAudioHelper` audio transcoding.
