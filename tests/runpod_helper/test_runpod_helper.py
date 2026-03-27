@@ -41,6 +41,7 @@ _load_env()
 
 API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 ENDPOINT_URL = os.environ.get("RUNPOD_ENDPOINT_URL", "")
+MODEL = os.environ.get("RUNPOD_MODEL", "qwen3-vl-32b")
 
 # ---------------------------------------------------------------------------
 # Import
@@ -92,6 +93,7 @@ async def run_tests():
     print("=" * 60)
     print("RunPod Helper Integration Test")
     print(f"  endpoint: {ENDPOINT_URL}")
+    print(f"  model:    {MODEL}")
     print("=" * 60)
 
     if not API_KEY or not ENDPOINT_URL:
@@ -106,6 +108,7 @@ async def run_tests():
     res = await InoRunpodHelper.serverless_vllm_runsync(
         url=ENDPOINT_URL,
         api_key=API_KEY,
+        model=MODEL,
         user_prompt="List 3 benefits of drinking water. Keep each to one sentence.",
         temperature=0.3,
         max_tokens=256,
@@ -135,6 +138,7 @@ async def run_tests():
     res = await InoRunpodHelper.serverless_vllm_runsync(
         url=ENDPOINT_URL,
         api_key=API_KEY,
+        model=MODEL,
         system_prompt="You are a pirate captain. Always respond in pirate speak. Keep it short.",
         user_prompt="What's the weather like today?",
         temperature=0.7,
@@ -152,6 +156,7 @@ async def run_tests():
     res = await InoRunpodHelper.serverless_vllm_runsync(
         url=ENDPOINT_URL,
         api_key=API_KEY,
+        model=MODEL,
         system_prompt="You are a JSON API. Always respond with valid JSON only, no markdown. Schema: {\"sentiment\": \"positive|negative|neutral\", \"confidence\": 0.0-1.0}",
         user_prompt="I absolutely love this new phone, it's the best purchase I've made all year!",
         temperature=0,
@@ -169,6 +174,7 @@ async def run_tests():
     res = await InoRunpodHelper.serverless_vllm_runsync(
         url=ENDPOINT_URL,
         api_key=API_KEY,
+        model=MODEL,
         system_prompt="You are a creative writing assistant. Write vivid, concise prose.",
         user_prompt="Write a 2-sentence story about a robot discovering music for the first time.",
         temperature=0.9,
@@ -192,6 +198,7 @@ async def run_tests():
         res = await InoRunpodHelper.serverless_vllm_runsync(
             url=ENDPOINT_URL,
             api_key=API_KEY,
+            model=MODEL,
             system_prompt="Describe images concisely in 1-2 sentences.",
             user_prompt="What do you see in this image?",
             image=image_data_uri,
@@ -216,6 +223,7 @@ async def run_tests():
     res = await InoRunpodHelper.serverless_vllm_runsync(
         url=ENDPOINT_URL,
         api_key="invalid_key_12345",
+        model=MODEL,
         user_prompt="Hello",
         max_tokens=16,
     )
@@ -231,6 +239,7 @@ async def run_tests():
     res = await InoRunpodHelper.serverless_vllm_runsync(
         url="https://api.runpod.ai/v2/nonexistent_endpoint_xyz/runsync",
         api_key=API_KEY,
+        model=MODEL,
         user_prompt="Hello",
         max_tokens=16,
     )

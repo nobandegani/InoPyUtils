@@ -8,6 +8,7 @@ class InoRunpodHelper:
     async def serverless_vllm_runsync(
             url: str,
             api_key: str,
+            model: str,
             user_prompt: str,
             system_prompt: str = "",
             image: Optional[str] = None,
@@ -16,9 +17,12 @@ class InoRunpodHelper:
     ) -> dict:
         """Send a synchronous chat completion request to a RunPod serverless vLLM endpoint.
 
+        Uses the OpenAI-compatible route for proper vision/multimodal support.
+
         Args:
             url: RunPod runsync endpoint URL.
             api_key: RunPod API key.
+            model: Model name served by vLLM.
             user_prompt: The user message string.
             system_prompt: Optional system message string.
             image: Optional image URL or base64 data URI (e.g. "https://..." or "data:image/jpeg;base64,...").
@@ -46,10 +50,13 @@ class InoRunpodHelper:
 
             payload = {
                 "input": {
-                    "messages": messages,
-                    "sampling_params": {
+                    "openai_route": "/v1/chat/completions",
+                    "openai_input": {
+                        "model": model,
+                        "messages": messages,
                         "temperature": temperature,
-                        "max_tokens": max_tokens
+                        "max_tokens": max_tokens,
+                        "stream": False
                     }
                 }
             }
@@ -74,22 +81,25 @@ class InoRunpodHelper:
                                error_code=data.get("error"),
                                status=status)
 
-            output = data.get("output", [])
-            first_output = output[0] if isinstance(output, list) and output else {}
+            raw_output = data.get("output", [])
+            output = raw_output[0] if isinstance(raw_output, list) and raw_output else raw_output if isinstance(raw_output, dict) else {}
 
-            choices = first_output.get("choices", []) if isinstance(first_output, dict) else []
-            usage = first_output.get("usage") if isinstance(first_output, dict) else None
+            # OpenAI-compatible response format
+            choices = output.get("choices", [])
+            usage = output.get("usage")
 
             first_choice = choices[0] if choices else {}
-            tokens = first_choice.get("tokens", []) if isinstance(first_choice, dict) else []
-            response_text = tokens[0] if tokens else ""
+            message = first_choice.get("message", {})
+            content = message.get("content") or message.get("reasoning") or ""
 
             return ino_ok("runsync complete",
                           id=data.get("id"),
                           status=status,
                           delay_time=data.get("delayTime"),
                           execution_time=data.get("executionTime"),
-                          response=response_text,
+                          response=content,
+                          reasoning=message.get("reasoning"),
+                          finish_reason=first_choice.get("finish_reason"),
                           choices=choices,
                           usage=usage,
                           output=output,
