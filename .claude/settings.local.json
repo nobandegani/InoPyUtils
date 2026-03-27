@@ -10,7 +10,9 @@
       "Bash(python tests/runpod_helper/test_runpod_helper.py)",
       "Bash(xxd -l 16 \"E:/likeness/spark/python/InoPyUtils/tests/runpod_helper/image.jpg\")",
       "Bash(python -c \"f=open\\(r''E:\\\\likeness\\\\spark\\\\python\\\\InoPyUtils\\\\tests\\\\runpod_helper\\\\image.jpg'',''rb''\\); d=f.read\\(16\\); f.close\\(\\); print\\('' ''.join\\(f''{b:02x}'' for b in d\\)\\); print\\(f''starts with: {d[:3]}''\\)\")",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)"
     ]
   }
 }
