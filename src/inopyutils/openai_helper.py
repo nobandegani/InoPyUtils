@@ -42,11 +42,13 @@ class InoOpenAIHelper:
             )
 
             choice = response.choices[0] if response.choices else None
-            content = choice.message.content if choice else ""
+            msg = choice.message if choice else None
+            content = (msg.content or getattr(msg, "reasoning", None) or "") if msg else ""
 
             return ino_ok(
                 "chat complete",
                 response=content,
+                reasoning=getattr(msg, "reasoning", None) if msg else None,
                 finish_reason=choice.finish_reason if choice else None,
                 usage={
                     "prompt_tokens": response.usage.prompt_tokens,
