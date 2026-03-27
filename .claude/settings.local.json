@@ -12,7 +12,9 @@
       "Bash(python -c \"f=open\\(r''E:\\\\likeness\\\\spark\\\\python\\\\InoPyUtils\\\\tests\\\\runpod_helper\\\\image.jpg'',''rb''\\); d=f.read\\(16\\); f.close\\(\\); print\\('' ''.join\\(f''{b:02x}'' for b in d\\)\\); print\\(f''starts with: {d[:3]}''\\)\")",
       "Bash(python:*)",
       "Bash(pip show:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }
