@@ -1,5 +1,4 @@
-import base64
-from typing import Union
+from typing import Optional
 
 from .http_helper import InoHttpHelper
 from .util_helper import ino_ok, ino_err, ino_is_err
@@ -9,16 +8,22 @@ class InoRunpodHelper:
     async def serverless_vllm_runsync(
             url: str,
             api_key: str,
-            system_prompt: str,
             user_prompt: str,
+            system_prompt: str = "",
+            image: Optional[str] = None,
             temperature: float = 0.7,
             max_tokens: int = 1024,
-            image: Union[str, bytes, None] = None
     ) -> dict:
         """Send a synchronous chat completion request to a RunPod serverless vLLM endpoint.
 
         Args:
-            image: Image as a URL string or raw bytes (JPEG/PNG). Bytes are base64-encoded as a data URI.
+            url: RunPod runsync endpoint URL.
+            api_key: RunPod API key.
+            user_prompt: The user message string.
+            system_prompt: Optional system message string.
+            image: Optional image URL or base64 data URI (e.g. "https://..." or "data:image/jpeg;base64,...").
+            temperature: Sampling temperature.
+            max_tokens: Max tokens in the response.
         """
         try:
             headers = {
@@ -26,25 +31,22 @@ class InoRunpodHelper:
                 "Content-Type": "application/json"
             }
 
-            if image is not None:
-                if isinstance(image, bytes):
-                    b64 = base64.b64encode(image).decode("ascii")
-                    image_uri = f"data:image/jpeg;base64,{b64}"
-                else:
-                    image_uri = image
+            if image:
                 user_content = [
                     {"type": "text", "text": user_prompt},
-                    {"type": "image_url", "image_url": {"url": image_uri}}
+                    {"type": "image_url", "image_url": {"url": image}}
                 ]
             else:
                 user_content = user_prompt
 
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": user_content})
+
             payload = {
                 "input": {
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_content}
-                    ],
+                    "messages": messages,
                     "sampling_params": {
                         "temperature": temperature,
                         "max_tokens": max_tokens
@@ -78,7 +80,6 @@ class InoRunpodHelper:
             choices = first_output.get("choices", []) if isinstance(first_output, dict) else []
             usage = first_output.get("usage") if isinstance(first_output, dict) else None
 
-            # Extract first choice -> first token as the response text
             first_choice = choices[0] if choices else {}
             tokens = first_choice.get("tokens", []) if isinstance(first_choice, dict) else []
             response_text = tokens[0] if tokens else ""
