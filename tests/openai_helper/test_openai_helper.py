@@ -179,7 +179,39 @@ def run_tests():
         print(f"\n         --- Response ---\n{res.get('response')}")
 
     # ------------------------------------------------------------------
-    # 5. Invalid API key — should return ino_err
+    # 5. Image input — local file as base64 data URI
+    # ------------------------------------------------------------------
+    print("\n--- Image input (base64 data URI) ---")
+
+    image_path = Path(__file__).resolve().parent / "image.jpg"
+    if image_path.exists():
+        import base64
+        image_bytes = image_path.read_bytes()
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+        image_data_uri = f"data:image/jpeg;base64,{image_b64}"
+
+        res = InoOpenAIHelper.chat(
+            api_key=API_KEY,
+            base_url=BASE_URL,
+            model=MODEL,
+            system_prompt="Describe images concisely in 1-2 sentences.",
+            user_prompt="What do you see in this image?",
+            image=image_data_uri,
+            temperature=0.3,
+            max_tokens=128,
+        )
+        check("image base64", res)
+        if res.get("success"):
+            check_bool("image has response", isinstance(res.get("response"), str) and len(res["response"]) > 0,
+                        f"response={res.get('response')}")
+            print(f"\n         --- Response ---\n{res.get('response')}")
+        else:
+            print(f"         msg: {res.get('msg')}")
+    else:
+        print(f"  [SKIP] image.jpg not found at {image_path}")
+
+    # ------------------------------------------------------------------
+    # 6. Invalid API key — should return ino_err
     # ------------------------------------------------------------------
     print("\n--- Invalid API key ---")
 
