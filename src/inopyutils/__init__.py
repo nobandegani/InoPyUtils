@@ -14,6 +14,7 @@ from .mongo_helper import InoMongoHelper
 from .csv_helper import InoCsvHelper
 from .civitai_helper import InoCivitHelper
 from .runpod_helper import InoRunpodHelper
+from .openai_helper import InoOpenAIHelper
 
 __all__ = [
     "InoConfigHelper",
@@ -33,6 +34,7 @@ __all__ = [
     "InoCsvHelper",
     "InoCivitHelper",
     "InoRunpodHelper",
+    "InoOpenAIHelper",
     "ino_ok",
     "ino_err",
     "ino_is_err"
