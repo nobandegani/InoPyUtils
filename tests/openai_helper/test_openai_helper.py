@@ -100,17 +100,17 @@ def run_tests():
         return
 
     # ------------------------------------------------------------------
-    # 1. Basic chat completion
+    # 1. Basic chat — user prompt only
     # ------------------------------------------------------------------
-    print("\n--- Basic chat ---")
+    print("\n--- Basic chat (user prompt only) ---")
 
     res = InoOpenAIHelper.chat(
         api_key=API_KEY,
         base_url=BASE_URL,
         model=MODEL,
-        user_prompt="What is 2 + 2? Reply with just the number.",
-        temperature=0,
-        max_tokens=16,
+        user_prompt="List 3 benefits of drinking water. Keep each to one sentence.",
+        temperature=0.3,
+        max_tokens=256,
     )
     check("basic chat", res)
 
@@ -121,46 +121,65 @@ def run_tests():
                     f"finish_reason={res.get('finish_reason')}")
         check_bool("has usage", res.get("usage") is not None, f"usage={res.get('usage')}")
         check_bool("has raw response", res.get("raw") is not None)
-        print(f"         response: {res.get('response')}")
-        print(f"         usage: {res.get('usage')}")
+        print(f"\n         --- Response ---\n{res.get('response')}")
+        print(f"\n         usage: {res.get('usage')}")
 
     # ------------------------------------------------------------------
-    # 2. With system prompt
+    # 2. With system prompt — constrained persona
     # ------------------------------------------------------------------
-    print("\n--- With system prompt ---")
-
-    res = InoOpenAIHelper.chat(
-        api_key=API_KEY,
-        base_url=BASE_URL,
-        model=MODEL,
-        user_prompt="ping",
-        system_prompt="You only reply with the word 'pong'. Nothing else.",
-        temperature=0,
-        max_tokens=8,
-    )
-    check("system prompt", res)
-    if res.get("success"):
-        print(f"         response: {res.get('response')}")
-
-    # ------------------------------------------------------------------
-    # 3. No system prompt (default)
-    # ------------------------------------------------------------------
-    print("\n--- No system prompt ---")
+    print("\n--- With system prompt (persona) ---")
 
     res = InoOpenAIHelper.chat(
         api_key=API_KEY,
         base_url=BASE_URL,
         model=MODEL,
-        user_prompt="Say hello in one word.",
-        temperature=0,
-        max_tokens=8,
+        system_prompt="You are a pirate captain. Always respond in pirate speak. Keep it short.",
+        user_prompt="What's the weather like today?",
+        temperature=0.7,
+        max_tokens=128,
     )
-    check("no system prompt", res)
+    check("system prompt persona", res)
     if res.get("success"):
-        print(f"         response: {res.get('response')}")
+        print(f"\n         --- Response ---\n{res.get('response')}")
 
     # ------------------------------------------------------------------
-    # 4. Invalid API key — should return ino_err
+    # 3. With system prompt — structured output
+    # ------------------------------------------------------------------
+    print("\n--- With system prompt (structured output) ---")
+
+    res = InoOpenAIHelper.chat(
+        api_key=API_KEY,
+        base_url=BASE_URL,
+        model=MODEL,
+        system_prompt="You are a JSON API. Always respond with valid JSON only, no markdown. Schema: {\"sentiment\": \"positive|negative|neutral\", \"confidence\": 0.0-1.0}",
+        user_prompt="I absolutely love this new phone, it's the best purchase I've made all year!",
+        temperature=0,
+        max_tokens=64,
+    )
+    check("system prompt structured", res)
+    if res.get("success"):
+        print(f"\n         --- Response ---\n{res.get('response')}")
+
+    # ------------------------------------------------------------------
+    # 4. Creative generation
+    # ------------------------------------------------------------------
+    print("\n--- Creative generation (high temperature) ---")
+
+    res = InoOpenAIHelper.chat(
+        api_key=API_KEY,
+        base_url=BASE_URL,
+        model=MODEL,
+        system_prompt="You are a creative writing assistant. Write vivid, concise prose.",
+        user_prompt="Write a 2-sentence story about a robot discovering music for the first time.",
+        temperature=0.9,
+        max_tokens=128,
+    )
+    check("creative generation", res)
+    if res.get("success"):
+        print(f"\n         --- Response ---\n{res.get('response')}")
+
+    # ------------------------------------------------------------------
+    # 5. Invalid API key — should return ino_err
     # ------------------------------------------------------------------
     print("\n--- Invalid API key ---")
 
@@ -176,7 +195,7 @@ def run_tests():
     print(f"         msg: {res.get('msg')}")
 
     # ------------------------------------------------------------------
-    # 5. Invalid base_url — should return ino_err
+    # 6. Invalid base_url — should return ino_err
     # ------------------------------------------------------------------
     print("\n--- Invalid base URL ---")
 
