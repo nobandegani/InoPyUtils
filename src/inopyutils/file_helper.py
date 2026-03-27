@@ -1,10 +1,13 @@
 import zipfile
 import asyncio, os
+import base64
 import json
+import mimetypes
 import shutil
 import re
 import hashlib
 from pathlib import Path
+from typing import Optional
 import aiofiles
 from .media_helper import InoMediaHelper
 from .util_helper import ino_is_err, ino_err, ino_ok
@@ -498,3 +501,55 @@ class InoFileHelper:
             return ino_ok(f"✅ SHA-256 computed for '{path.name}'", sha=digest)
         except Exception as e:
             return ino_err(f"❌ Failed to compute SHA-256 for '{file_path}': {e}")
+
+    @staticmethod
+    async def file_to_base64_data_uri(file_path, mime_type: Optional[str] = None) -> dict:
+        """Read a file and return it as a base64 data URI string.
+
+        Auto-detects MIME type from file extension and magic bytes. Falls back to
+        the provided mime_type if detection fails.
+
+        Args:
+            file_path: Path to the file.
+            mime_type: Optional MIME type override (e.g. "image/jpeg"). Used as
+                       fallback when auto-detection fails.
+
+        Returns:
+            ino_ok with data_uri string, or ino_err on failure.
+        """
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                return ino_err(f"file not found: {path}")
+
+            file_bytes = await asyncio.to_thread(path.read_bytes)
+
+            # Auto-detect from magic bytes
+            detected = None
+            if file_bytes[:4] == b'\x89PNG':
+                detected = "image/png"
+            elif file_bytes[:3] == b'\xff\xd8\xff':
+                detected = "image/jpeg"
+            elif file_bytes[:4] == b'RIFF' and file_bytes[8:12] == b'WEBP':
+                detected = "image/webp"
+            elif file_bytes[:3] == b'GIF':
+                detected = "image/gif"
+            elif file_bytes[:4] == b'\x00\x00\x00\x1c' or file_bytes[4:8] == b'ftyp':
+                detected = "video/mp4"
+            elif file_bytes[:4] == b'%PDF':
+                detected = "application/pdf"
+
+            # Fallback to user-provided mime_type, then extension-based detection
+            if not detected and mime_type:
+                detected = mime_type
+            if not detected:
+                detected, _ = mimetypes.guess_type(str(path))
+
+            resolved_mime = detected or "application/octet-stream"
+
+            b64 = base64.b64encode(file_bytes).decode("ascii")
+            data_uri = f"data:{resolved_mime};base64,{b64}"
+
+            return ino_ok("file encoded", data_uri=data_uri, mime_type=resolved_mime)
+        except Exception as e:
+            return ino_err(f"failed to encode file: {e}")

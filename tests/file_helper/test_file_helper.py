@@ -153,13 +153,109 @@ async def test_empty_directory():
 
 
 # ---------------------------------------------------------------------------
+# file_to_base64_data_uri tests
+# ---------------------------------------------------------------------------
+
+IMAGE_PATH = Path(__file__).resolve().parents[1] / "assets" / "image.jpg"
+
+
+async def test_base64_auto_detect_jpeg():
+    """Auto-detect JPEG from magic bytes."""
+    print("\n── test_base64_auto_detect_jpeg")
+    if not IMAGE_PATH.exists():
+        print(f"  [SKIP] image.jpg not found at {IMAGE_PATH}")
+        return
+    res = await InoFileHelper.file_to_base64_data_uri(IMAGE_PATH)
+    check("returns success", res)
+    check_bool("mime is image/jpeg", res.get("mime_type") == "image/jpeg",
+               f"mime_type={res.get('mime_type')}")
+    check_bool("data_uri starts correctly", res.get("data_uri", "").startswith("data:image/jpeg;base64,"),
+               f"data_uri prefix: {res.get('data_uri', '')[:40]}")
+    check_bool("data_uri has base64 content", len(res.get("data_uri", "")) > 50)
+    print(f"         mime_type: {res.get('mime_type')}")
+    print(f"         data_uri length: {len(res.get('data_uri', ''))}")
+
+
+async def test_base64_explicit_mime():
+    """Explicit mime_type override when magic bytes don't match."""
+    print("\n── test_base64_explicit_mime")
+    setup()
+    # Write a file with no recognizable magic bytes
+    test_file = TEST_DIR / "unknown.bin"
+    test_file.write_bytes(b"\x00\x01\x02\x03some data here")
+    res = await InoFileHelper.file_to_base64_data_uri(test_file, mime_type="application/custom")
+    check("returns success", res)
+    check_bool("uses provided mime_type", res.get("mime_type") == "application/custom",
+               f"mime_type={res.get('mime_type')}")
+    check_bool("data_uri uses provided mime", res.get("data_uri", "").startswith("data:application/custom;base64,"))
+    teardown()
+
+
+async def test_base64_fallback_octet_stream():
+    """No magic bytes match, no extension match, no mime_type — falls back to application/octet-stream."""
+    print("\n── test_base64_fallback_octet_stream")
+    setup()
+    test_file = TEST_DIR / "noext"
+    test_file.write_bytes(b"\x00\x01\x02\x03")
+    res = await InoFileHelper.file_to_base64_data_uri(test_file)
+    check("returns success", res)
+    check_bool("falls back to octet-stream", res.get("mime_type") == "application/octet-stream",
+               f"mime_type={res.get('mime_type')}")
+    teardown()
+
+
+async def test_base64_png_detection():
+    """Auto-detect PNG from magic bytes."""
+    print("\n── test_base64_png_detection")
+    setup()
+    test_file = TEST_DIR / "fake.png"
+    # PNG magic bytes + dummy data
+    test_file.write_bytes(b'\x89PNG\r\n\x1a\n' + b'\x00' * 20)
+    res = await InoFileHelper.file_to_base64_data_uri(test_file)
+    check("returns success", res)
+    check_bool("mime is image/png", res.get("mime_type") == "image/png",
+               f"mime_type={res.get('mime_type')}")
+    teardown()
+
+
+async def test_base64_nonexistent_file():
+    """Non-existent file returns error."""
+    print("\n── test_base64_nonexistent_file")
+    res = await InoFileHelper.file_to_base64_data_uri("/nonexistent/file.jpg")
+    check_bool("returns error", res.get("success") is False)
+    print(f"         msg: {res.get('msg')}")
+
+
+async def test_base64_roundtrip():
+    """Encode and decode — verify content matches."""
+    print("\n── test_base64_roundtrip")
+    if not IMAGE_PATH.exists():
+        print(f"  [SKIP] image.jpg not found at {IMAGE_PATH}")
+        return
+    import base64
+    original = IMAGE_PATH.read_bytes()
+    res = await InoFileHelper.file_to_base64_data_uri(IMAGE_PATH)
+    check("returns success", res)
+    # Extract base64 portion and decode
+    data_uri = res.get("data_uri", "")
+    b64_part = data_uri.split(",", 1)[1] if "," in data_uri else ""
+    decoded = base64.b64decode(b64_part)
+    check_bool("roundtrip matches original", decoded == original,
+               f"original={len(original)} bytes, decoded={len(decoded)} bytes")
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
 async def main():
     print("=" * 60)
-    print("InoFileHelper.remove_duplicate_files tests")
+    print("InoFileHelper tests")
     print("=" * 60)
+
+    print("\n" + "-" * 40)
+    print("remove_duplicate_files")
+    print("-" * 40)
 
     await test_no_duplicates()
     await test_flat_duplicates()
@@ -167,6 +263,17 @@ async def main():
     await test_recursive_false_ignores_subfolders()
     await test_invalid_path()
     await test_empty_directory()
+
+    print("\n" + "-" * 40)
+    print("file_to_base64_data_uri")
+    print("-" * 40)
+
+    await test_base64_auto_detect_jpeg()
+    await test_base64_explicit_mime()
+    await test_base64_fallback_octet_stream()
+    await test_base64_png_detection()
+    await test_base64_nonexistent_file()
+    await test_base64_roundtrip()
 
     print("\n" + "=" * 60)
     print(f"Results: {passed} passed, {failed} failed")
