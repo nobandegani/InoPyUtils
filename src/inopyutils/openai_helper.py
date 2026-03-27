@@ -8,7 +8,8 @@ class InoOpenAIHelper:
             api_key: str,
             base_url: str,
             model: str,
-            messages: list,
+            user_prompt: str,
+            system_prompt: str = "",
             temperature: float = 0.7,
             max_tokens: int = 1024,
             **kwargs
@@ -19,12 +20,18 @@ class InoOpenAIHelper:
             api_key: API key (e.g. RUNPOD_API_KEY).
             base_url: Base URL for the API (e.g. RunPod endpoint + /openai/v1).
             model: Model name to use.
-            messages: List of message dicts with 'role' and 'content'.
+            user_prompt: The user message string.
+            system_prompt: Optional system message string.
             temperature: Sampling temperature.
             max_tokens: Max tokens in the response.
             **kwargs: Additional args passed to chat.completions.create().
         """
         try:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": user_prompt})
+
             client = OpenAI(api_key=api_key, base_url=base_url)
             response = client.chat.completions.create(
                 model=model,

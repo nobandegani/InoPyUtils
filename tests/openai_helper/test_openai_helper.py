@@ -39,7 +39,7 @@ _load_env()
 
 API_KEY = os.environ.get("OPENAI_API_KEY", "")
 ENDPOINT_URL = os.environ.get("OPENAI_ENDPOINT_URL", "")
-BASE_URL = f"{ENDPOINT_URL}/openai/v1" if ENDPOINT_URL else ""
+BASE_URL = ENDPOINT_URL.rstrip("/") if ENDPOINT_URL else ""
 MODEL = os.environ.get("OPENAI_MODEL", "meta-llama/Llama-2-7b-chat-hf")
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def run_tests():
         api_key=API_KEY,
         base_url=BASE_URL,
         model=MODEL,
-        messages=[{"role": "user", "content": "What is 2 + 2? Reply with just the number."}],
+        user_prompt="What is 2 + 2? Reply with just the number.",
         temperature=0,
         max_tokens=16,
     )
@@ -125,44 +125,37 @@ def run_tests():
         print(f"         usage: {res.get('usage')}")
 
     # ------------------------------------------------------------------
-    # 2. Multi-turn conversation
+    # 2. With system prompt
     # ------------------------------------------------------------------
-    print("\n--- Multi-turn conversation ---")
+    print("\n--- With system prompt ---")
 
     res = InoOpenAIHelper.chat(
         api_key=API_KEY,
         base_url=BASE_URL,
         model=MODEL,
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant. Reply in one short sentence."},
-            {"role": "user", "content": "My name is Alice."},
-            {"role": "assistant", "content": "Nice to meet you, Alice!"},
-            {"role": "user", "content": "What is my name?"},
-        ],
-        temperature=0,
-        max_tokens=32,
-    )
-    check("multi-turn", res)
-    if res.get("success"):
-        print(f"         response: {res.get('response')}")
-
-    # ------------------------------------------------------------------
-    # 3. System prompt + low temperature
-    # ------------------------------------------------------------------
-    print("\n--- System prompt ---")
-
-    res = InoOpenAIHelper.chat(
-        api_key=API_KEY,
-        base_url=BASE_URL,
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "You only reply with the word 'pong'. Nothing else."},
-            {"role": "user", "content": "ping"},
-        ],
+        user_prompt="ping",
+        system_prompt="You only reply with the word 'pong'. Nothing else.",
         temperature=0,
         max_tokens=8,
     )
     check("system prompt", res)
+    if res.get("success"):
+        print(f"         response: {res.get('response')}")
+
+    # ------------------------------------------------------------------
+    # 3. No system prompt (default)
+    # ------------------------------------------------------------------
+    print("\n--- No system prompt ---")
+
+    res = InoOpenAIHelper.chat(
+        api_key=API_KEY,
+        base_url=BASE_URL,
+        model=MODEL,
+        user_prompt="Say hello in one word.",
+        temperature=0,
+        max_tokens=8,
+    )
+    check("no system prompt", res)
     if res.get("success"):
         print(f"         response: {res.get('response')}")
 
@@ -175,7 +168,7 @@ def run_tests():
         api_key="invalid_key_12345",
         base_url=BASE_URL,
         model=MODEL,
-        messages=[{"role": "user", "content": "Hello"}],
+        user_prompt="Hello",
         max_tokens=8,
     )
     check_bool("invalid key returns error", not res.get("success"),
@@ -191,7 +184,7 @@ def run_tests():
         api_key=API_KEY,
         base_url="https://api.runpod.ai/v2/nonexistent_xyz/openai/v1",
         model=MODEL,
-        messages=[{"role": "user", "content": "Hello"}],
+        user_prompt="Hello",
         max_tokens=8,
     )
     check_bool("invalid url returns error", not res.get("success"),
