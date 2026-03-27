@@ -1,6 +1,9 @@
+from typing import Optional
+
 from openai import OpenAI
 
 from .util_helper import ino_ok, ino_err
+
 
 class InoOpenAIHelper:
     @staticmethod
@@ -10,6 +13,7 @@ class InoOpenAIHelper:
             model: str,
             user_prompt: str,
             system_prompt: str = "",
+            image: Optional[str] = None,
             temperature: float = 0.7,
             max_tokens: int = 1024,
             **kwargs
@@ -22,6 +26,7 @@ class InoOpenAIHelper:
             model: Model name to use.
             user_prompt: The user message string.
             system_prompt: Optional system message string.
+            image: Optional image URL or base64 data URI (e.g. "https://..." or "data:image/jpeg;base64,...").
             temperature: Sampling temperature.
             max_tokens: Max tokens in the response.
             **kwargs: Additional args passed to chat.completions.create().
@@ -30,7 +35,15 @@ class InoOpenAIHelper:
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": user_prompt})
+
+            if image:
+                user_content = [
+                    {"type": "text", "text": user_prompt},
+                    {"type": "image_url", "image_url": {"url": image}}
+                ]
+            else:
+                user_content = user_prompt
+            messages.append({"role": "user", "content": user_content})
 
             client = OpenAI(api_key=api_key, base_url=base_url)
             response = client.chat.completions.create(
