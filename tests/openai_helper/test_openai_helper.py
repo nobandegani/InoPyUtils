@@ -12,6 +12,7 @@ Run:
     python tests/openai_helper/test_openai_helper.py
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -86,7 +87,7 @@ def check_bool(name: str, condition: bool, fail_msg: str = ""):
 # Tests
 # ---------------------------------------------------------------------------
 
-def run_tests():
+async def run_tests():
     global passed, failed
 
     print("=" * 60)
@@ -104,7 +105,7 @@ def run_tests():
     # ------------------------------------------------------------------
     print("\n--- Basic chat (user prompt only) ---")
 
-    res = InoOpenAIHelper.chat(
+    res = await InoOpenAIHelper.chat_completions(
         api_key=API_KEY,
         base_url=BASE_URL,
         model=MODEL,
@@ -129,7 +130,7 @@ def run_tests():
     # ------------------------------------------------------------------
     print("\n--- With system prompt (persona) ---")
 
-    res = InoOpenAIHelper.chat(
+    res = await InoOpenAIHelper.chat_completions(
         api_key=API_KEY,
         base_url=BASE_URL,
         model=MODEL,
@@ -147,7 +148,7 @@ def run_tests():
     # ------------------------------------------------------------------
     print("\n--- With system prompt (structured output) ---")
 
-    res = InoOpenAIHelper.chat(
+    res = await InoOpenAIHelper.chat_completions(
         api_key=API_KEY,
         base_url=BASE_URL,
         model=MODEL,
@@ -165,7 +166,7 @@ def run_tests():
     # ------------------------------------------------------------------
     print("\n--- Creative generation (high temperature) ---")
 
-    res = InoOpenAIHelper.chat(
+    res = await InoOpenAIHelper.chat_completions(
         api_key=API_KEY,
         base_url=BASE_URL,
         model=MODEL,
@@ -190,7 +191,7 @@ def run_tests():
         image_b64 = base64.b64encode(image_bytes).decode("ascii")
         image_data_uri = f"data:image/jpeg;base64,{image_b64}"
 
-        res = InoOpenAIHelper.chat(
+        res = await InoOpenAIHelper.chat_completions(
             api_key=API_KEY,
             base_url=BASE_URL,
             model=MODEL,
@@ -215,7 +216,7 @@ def run_tests():
     # ------------------------------------------------------------------
     print("\n--- Invalid API key ---")
 
-    res = InoOpenAIHelper.chat(
+    res = await InoOpenAIHelper.chat_completions(
         api_key="invalid_key_12345",
         base_url=BASE_URL,
         model=MODEL,
@@ -231,7 +232,7 @@ def run_tests():
     # ------------------------------------------------------------------
     print("\n--- Invalid base URL ---")
 
-    res = InoOpenAIHelper.chat(
+    res = await InoOpenAIHelper.chat_completions(
         api_key=API_KEY,
         base_url="https://api.runpod.ai/v2/nonexistent_xyz/openai/v1",
         model=MODEL,
@@ -252,4 +253,4 @@ def run_tests():
 
 
 if __name__ == "__main__":
-    run_tests()
+    asyncio.run(run_tests())

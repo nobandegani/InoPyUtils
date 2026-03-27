@@ -1,13 +1,13 @@
 from typing import Optional
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from .util_helper import ino_ok, ino_err
 
 
 class InoOpenAIHelper:
     @staticmethod
-    def chat(
+    async def chat_completions(
             api_key: str,
             base_url: str,
             model: str,
@@ -45,8 +45,8 @@ class InoOpenAIHelper:
                 user_content = user_prompt
             messages.append({"role": "user", "content": user_content})
 
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            response = client.chat.completions.create(
+            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            response = await client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=temperature,
