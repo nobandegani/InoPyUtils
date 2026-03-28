@@ -1,6 +1,7 @@
 import asyncio
 import aiofiles
 from aioboto3 import Session
+from .util_helper import ino_ok, ino_err
 from botocore.exceptions import ClientError, NoCredentialsError, EndpointConnectionError, ConnectTimeoutError, ReadTimeoutError, ConnectionClosedError
 from botocore.config import Config
 from boto3.s3.transfer import TransferConfig
@@ -147,11 +148,7 @@ class InoS3Helper:
         """
         bucket = bucket_name or self.bucket_name
         if not bucket:
-            return {
-                "success": False,
-                "msg": "❌ Bucket name must be provided either during initialization or method call",
-                "error_code": "MissingBucket"
-            }
+            return ino_err("❌ Bucket name must be provided either during initialization or method call", error_code="MissingBucket")
         return None
 
     def _normalize_key(self, key: Optional[str]) -> Optional[str]:
@@ -202,11 +199,7 @@ class InoS3Helper:
             except (FileNotFoundError, NoCredentialsError, ValueError) as e:
                 error_msg = f"❌ {operation_name} failed with non-retryable error: {str(e)}"
                 logging.error(error_msg)
-                return {
-                    "success": False,
-                    "msg": error_msg,
-                    "error_code": type(e).__name__
-                }
+                return ino_err(error_msg, error_code=type(e).__name__)
             except ClientError as e:
                 err = e.response.get("Error", {}) if hasattr(e, "response") else {}
                 error_code = err.get("Code", "")
@@ -218,11 +211,7 @@ class InoS3Helper:
                 if (error_code in non_retryable) or (isinstance(status, int) and 400 <= status < 500 and not is_retryable):
                     error_msg = f"❌ {operation_name} failed with non-retryable client error {error_code}: {str(e)}"
                     logging.error(error_msg)
-                    return {
-                        "success": False,
-                        "msg": error_msg,
-                        "error_code": error_code or "ClientError"
-                    }
+                    return ino_err(error_msg, error_code=error_code or "ClientError")
                 last_exception = e
                 if attempt < self.retries:
                     wait_time = (2 ** attempt) + random.uniform(0, 1)
@@ -231,11 +220,7 @@ class InoS3Helper:
                 else:
                     error_msg = f"❌ {operation_name} failed after {self.retries + 1} attempts with client error {error_code or status}: {str(e)}"
                     logging.error(error_msg)
-                    return {
-                        "success": False,
-                        "msg": error_msg,
-                        "error_code": error_code or "ClientError"
-                    }
+                    return ino_err(error_msg, error_code=error_code or "ClientError")
             except (EndpointConnectionError, ConnectTimeoutError, ReadTimeoutError, ConnectionClosedError) as e:
                 last_exception = e
                 if attempt < self.retries:
@@ -245,11 +230,7 @@ class InoS3Helper:
                 else:
                     error_msg = f"❌ {operation_name} failed after {self.retries + 1} attempts due to network error {type(e).__name__}: {str(e)}"
                     logging.error(error_msg)
-                    return {
-                        "success": False,
-                        "msg": error_msg,
-                        "error_code": type(e).__name__
-                    }
+                    return ino_err(error_msg, error_code=type(e).__name__)
             except Exception as e:
                 last_exception = e
                 if attempt < self.retries:
@@ -259,18 +240,10 @@ class InoS3Helper:
                 else:
                     error_msg = f"❌ {operation_name} failed after {self.retries + 1} attempts: {str(e)}"
                     logging.error(error_msg)
-                    return {
-                        "success": False,
-                        "msg": error_msg,
-                        "error_code": type(e).__name__
-                    }
-        
+                    return ino_err(error_msg, error_code=type(e).__name__)
+
         # This should never be reached, but just in case
-        return {
-            "success": False,
-            "msg": f"❌ {operation_name} failed unexpectedly",
-            "error_code": "UnknownError"
-        }
+        return ino_err(f"❌ {operation_name} failed unexpectedly", error_code="UnknownError")
 
     async def upload_file(
             self,
@@ -299,11 +272,7 @@ class InoS3Helper:
 
         # Check if local file exists
         if not Path(local_file_path).exists():
-            return {
-                "success": False,
-                "msg": f"❌ Local file not found: {local_file_path}",
-                "error_code": "FileNotFound"
-            }
+            return ino_err(f"❌ Local file not found: {local_file_path}", error_code="FileNotFound")
 
         async def _upload_operation() -> Dict[str, Any]:
             async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
@@ -321,13 +290,7 @@ class InoS3Helper:
                 )
                 success_msg = f"✅ Successfully uploaded {Path(local_file_path).name} to s3://{bucket}/{norm_key}"
                 logging.info(success_msg)
-                return {
-                    "success": True,
-                    "msg": success_msg,
-                    "s3_key": norm_key,
-                    "bucket": bucket,
-                    "local_file": local_file_path
-                }
+                return ino_ok(success_msg, s3_key=norm_key, bucket=bucket, local_file=local_file_path)
 
         return await self._retry_operation(
             _upload_operation,
@@ -369,14 +332,7 @@ class InoS3Helper:
             if verification.get("success", False):
                 skip_msg = f"⏭️ Skipped download, local file matches S3: {local_file_path}"
                 logging.info(skip_msg)
-                return {
-                    "success": True,
-                    "msg": skip_msg,
-                    "s3_key": norm_key,
-                    "bucket": bucket,
-                    "local_file": local_file_path,
-                    "skipped": True
-                }
+                return ino_ok(skip_msg, s3_key=norm_key, bucket=bucket, local_file=local_file_path, skipped=True)
 
         async def _download_operation() -> Dict[str, Any]:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
@@ -385,14 +341,7 @@ class InoS3Helper:
                 await s3.download_file(bucket, norm_key, local_file_path)
                 success_msg = f"✅ Successfully downloaded s3://{bucket}/{norm_key} to {local_file_path}"
                 logging.info(success_msg)
-                return {
-                    "success": True,
-                    "msg": success_msg,
-                    "s3_key": norm_key,
-                    "bucket": bucket,
-                    "local_file": local_file_path,
-                    "skipped": False
-                }
+                return ino_ok(success_msg, s3_key=norm_key, bucket=bucket, local_file=local_file_path, skipped=False)
 
         return await self._retry_operation(
             _download_operation,
@@ -426,13 +375,7 @@ class InoS3Helper:
 
         # Input validation
         if max_keys <= 0:
-            return {
-                "success": False,
-                "msg": "❌ max_keys must be greater than 0",
-                "error_code": "InvalidParameter",
-                "objects": [],
-                "count": 0
-            }
+            return ino_err("❌ max_keys must be greater than 0", error_code="InvalidParameter", objects=[], count=0)
 
         async def _list_operation() -> Dict[str, Any]:
             async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
@@ -471,14 +414,7 @@ class InoS3Helper:
                 out = all_objects[:max_keys]
                 success_msg = f"✅ Found {len(out)} objects in s3://{bucket} with prefix {norm_prefix}"
                 logging.info(success_msg)
-                result: Dict[str, Any] = {
-                    "success": True,
-                    "msg": success_msg,
-                    "objects": out,
-                    "count": len(out),
-                    "bucket": bucket,
-                    "prefix": norm_prefix
-                }
+                result: Dict[str, Any] = ino_ok(success_msg, objects=out, count=len(out), bucket=bucket, prefix=norm_prefix)
                 if not recursive:
                     result["common_prefixes"] = common_prefixes_accum
                 return result
@@ -548,14 +484,7 @@ class InoS3Helper:
 
                 msg = f"✅ Found {total} files in s3://{bucket}/{prefix} (recursive={recursive})"
                 logging.info(msg)
-                return {
-                    "success": True,
-                    "msg": msg,
-                    "count": total,
-                    "bucket": bucket,
-                    "s3_folder_key": prefix,
-                    "recursive": recursive,
-                }
+                return ino_ok(msg, count=total, bucket=bucket, s3_folder_key=prefix, recursive=recursive)
 
         return await self._retry_operation(
             _count_op,
@@ -588,12 +517,7 @@ class InoS3Helper:
                 await s3.delete_object(Bucket=bucket, Key=norm_key)
                 success_msg = f"✅ Successfully deleted s3://{bucket}/{norm_key}"
                 logging.info(success_msg)
-                return {
-                    "success": True,
-                    "msg": success_msg,
-                    "s3_key": norm_key,
-                    "bucket": bucket
-                }
+                return ino_ok(success_msg, s3_key=norm_key, bucket=bucket)
 
         return await self._retry_operation(
             _delete_operation,
@@ -636,8 +560,7 @@ class InoS3Helper:
         local_folder.mkdir(parents=True, exist_ok=True)
 
         result: Dict[str, Any] = {
-            "success": True,
-            "msg": "",
+            **ino_ok(""),
             "total_files": 0,
             "downloaded_successfully": 0,
             "skipped_files": 0,
@@ -701,11 +624,7 @@ class InoS3Helper:
                                     return {
                                         "s3_key": s3_key,
                                         "relative_path": relative_path,
-                                        "result": {
-                                            "success": True,
-                                            "msg": f"Skipped {relative_path} (already matches)",
-                                            "skipped": True
-                                        }
+                                        "result": ino_ok(f"Skipped {relative_path} (already matches)", skipped=True)
                                     }
 
                             # Ensure parent directories exist for nested files
@@ -715,21 +634,13 @@ class InoS3Helper:
                             return {
                                 "s3_key": s3_key,
                                 "relative_path": relative_path,
-                                "result": {
-                                    "success": True,
-                                    "msg": f"Downloaded {relative_path}",
-                                    "skipped": False
-                                }
+                                "result": ino_ok(f"Downloaded {relative_path}", skipped=False)
                             }
                         except Exception as e:
                             return {
                                 "s3_key": s3_key,
                                 "relative_path": relative_path,
-                                "result": {
-                                    "success": False,
-                                    "msg": f"Exception during download: {str(e)}",
-                                    "error_code": type(e).__name__
-                                }
+                                "result": ino_err(f"Exception during download: {str(e)}", error_code=type(e).__name__)
                             }
 
                 # Execute all downloads concurrently
@@ -798,11 +709,7 @@ class InoS3Helper:
                 # Do not fail the main operation if verification step errors; report it
                 ver_msg = f"⚠️ Verification step failed: {str(ve)}"
                 logging.warning(ver_msg)
-                result["verification"] = {
-                    "success": False,
-                    "msg": ver_msg,
-                    "error_code": type(ve).__name__
-                }
+                result["verification"] = ino_err(ver_msg, error_code=type(ve).__name__)
 
         return result
 
@@ -865,8 +772,7 @@ class InoS3Helper:
         local_folder.mkdir(parents=True, exist_ok=True)
 
         result: Dict[str, Any] = {
-            "success": True,
-            "msg": "",
+            **ino_ok(""),
             "bucket": bucket,
             "s3_key": prefix,
             "local_folder_path": local_folder_path,
@@ -988,11 +894,7 @@ class InoS3Helper:
                         local_file.parent.mkdir(parents=True, exist_ok=True)
                         downloaded_any = False
                         updated_existing = False
-                        last_verify_res: Dict[str, Any] = {
-                            "success": False,
-                            "msg": "Unknown verification state",
-                            "error_code": "UnknownVerificationState"
-                        }
+                        last_verify_res: Dict[str, Any] = ino_err("Unknown verification state", error_code="UnknownVerificationState")
                         last_error: Optional[Exception] = None
 
                         for attempt in range(file_attempt_limit):
@@ -1058,11 +960,7 @@ class InoS3Helper:
                                 "relative_path": rel_key,
                                 "downloaded": downloaded_any,
                                 "updated": updated_existing,
-                                "verify": {
-                                    "success": False,
-                                    "msg": f"Failed after {file_attempt_limit} attempts: {str(last_error)}",
-                                    "error_code": type(last_error).__name__
-                                },
+                                "verify": ino_err(f"Failed after {file_attempt_limit} attempts: {str(last_error)}", error_code=type(last_error).__name__),
                                 "attempts": file_attempt_limit,
                             }
 
@@ -1211,11 +1109,7 @@ class InoS3Helper:
                         local_size = local_file.stat().st_size
                         uploaded_any = False
                         updated_existing = rel_key in remote_objects
-                        last_verify_res: Dict[str, Any] = {
-                            "success": False,
-                            "msg": "Unknown verification state",
-                            "error_code": "UnknownVerificationState"
-                        }
+                        last_verify_res: Dict[str, Any] = ino_err("Unknown verification state", error_code="UnknownVerificationState")
                         last_error: Optional[Exception] = None
                         force_upload = False
 
@@ -1291,11 +1185,7 @@ class InoS3Helper:
                                 "relative_path": rel_key,
                                 "uploaded": uploaded_any,
                                 "updated": updated_existing and uploaded_any,
-                                "verify": {
-                                    "success": False,
-                                    "msg": f"Failed after {file_attempt_limit} attempts: {str(last_error)}",
-                                    "error_code": type(last_error).__name__
-                                },
+                                "verify": ino_err(f"Failed after {file_attempt_limit} attempts: {str(last_error)}", error_code=type(last_error).__name__),
                                 "attempts": file_attempt_limit,
                             }
 
@@ -1402,26 +1292,10 @@ class InoS3Helper:
         # Validate local folder exists
         local_folder = Path(local_folder_path)
         if not local_folder.exists():
-            return {
-                "success": False,
-                "msg": f"❌ Local folder not found: {local_folder_path}",
-                "error_code": "FolderNotFound",
-                "total_files": 0,
-                "uploaded_successfully": 0,
-                "failed_uploads": 0,
-                "errors": []
-            }
+            return ino_err(f"❌ Local folder not found: {local_folder_path}", error_code="FolderNotFound", total_files=0, uploaded_successfully=0, failed_uploads=0, errors=[])
 
         if not local_folder.is_dir():
-            return {
-                "success": False,
-                "msg": f"❌ Path is not a directory: {local_folder_path}",
-                "error_code": "NotADirectory",
-                "total_files": 0,
-                "uploaded_successfully": 0,
-                "failed_uploads": 0,
-                "errors": []
-            }
+            return ino_err(f"❌ Path is not a directory: {local_folder_path}", error_code="NotADirectory", total_files=0, uploaded_successfully=0, failed_uploads=0, errors=[])
 
         # Ensure s3_folder_key normalized and ends with "/"
         s3_folder_key = self._normalize_key(s3_folder_key)
@@ -1429,8 +1303,7 @@ class InoS3Helper:
             s3_folder_key += "/"
 
         result: Dict[str, Any] = {
-            "success": True,
-            "msg": "",
+            **ino_ok(""),
             "total_files": 0,
             "uploaded_successfully": 0,
             "skipped_files": 0,
@@ -1483,11 +1356,7 @@ class InoS3Helper:
                                 if verification.get("success", False):
                                     return {
                                         "file_info": file_info,
-                                        "result": {
-                                            "success": True,
-                                            "msg": f"Skipped {file_info['relative_path']} (already matches)",
-                                            "skipped": True
-                                        }
+                                        "result": ino_ok(f"Skipped {file_info['relative_path']} (already matches)", skipped=True)
                                     }
 
                             # Infer content type
@@ -1511,20 +1380,12 @@ class InoS3Helper:
                             )
                             return {
                                 "file_info": file_info,
-                                "result": {
-                                    "success": True,
-                                    "msg": f"Uploaded {file_info['relative_path']}",
-                                    "skipped": False
-                                }
+                                "result": ino_ok(f"Uploaded {file_info['relative_path']}", skipped=False)
                             }
                         except Exception as e:
                             return {
                                 "file_info": file_info,
-                                "result": {
-                                    "success": False,
-                                    "msg": f"Exception during upload: {str(e)}",
-                                    "error_code": type(e).__name__
-                                }
+                                "result": ino_err(f"Exception during upload: {str(e)}", error_code=type(e).__name__)
                             }
 
                 # Execute all uploads concurrently
@@ -1593,11 +1454,7 @@ class InoS3Helper:
                 # Do not fail the main operation if verification step errors; report it
                 ver_msg = f"⚠️ Verification step failed: {str(ve)}"
                 logging.warning(ver_msg)
-                result["verification"] = {
-                    "success": False,
-                    "msg": ver_msg,
-                    "error_code": type(ve).__name__
-                }
+                result["verification"] = ino_err(ver_msg, error_code=type(ve).__name__)
 
         return result
 
@@ -1626,25 +1483,13 @@ class InoS3Helper:
             try:
                 async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
                     await s3.head_object(Bucket=bucket, Key=norm_key)
-                    return {
-                        "success": True,
-                        "msg": f"✅ Object s3://{bucket}/{norm_key} exists",
-                        "exists": True,
-                        "s3_key": norm_key,
-                        "bucket": bucket
-                    }
+                    return ino_ok(f"✅ Object s3://{bucket}/{norm_key} exists", exists=True, s3_key=norm_key, bucket=bucket)
             except ClientError as e:
                 err = e.response.get("Error", {}) if hasattr(e, "response") else {}
                 error_code = err.get("Code")
                 # Treat not-found variants as non-error negative existence
                 if error_code in ("NoSuchKey", "NotFound", "404"):
-                    return {
-                        "success": True,
-                        "msg": f"✅ Object s3://{bucket}/{norm_key} does not exist",
-                        "exists": False,
-                        "s3_key": norm_key,
-                        "bucket": bucket
-                    }
+                    return ino_ok(f"✅ Object s3://{bucket}/{norm_key} does not exist", exists=False, s3_key=norm_key, bucket=bucket)
                 else:
                     # Re-raise for retry mechanism to handle
                     raise
@@ -1726,21 +1571,20 @@ class InoS3Helper:
                     Params=params,
                     ExpiresIn=expires_in
                 )
-                return {
-                    "success": True,
-                    "msg": f"✅ Generated download link for s3://{bucket}/{norm_key}",
-                    "url": url,
-                    "bucket": bucket,
-                    "s3_key": norm_key,
-                    "filename": use_filename,
-                    "expires_in": expires_in,
-                    "object_content_type": object_content_type,
-                    "response_content_type": chosen_resp_content_type,
-                    "content_length": content_length,
-                    "etag": etag,
-                    "last_modified": str(last_modified) if last_modified is not None else None,
-                    "endpoint_url": self.endpoint_url,
-                }
+                return ino_ok(
+                    f"✅ Generated download link for s3://{bucket}/{norm_key}",
+                    url=url,
+                    bucket=bucket,
+                    s3_key=norm_key,
+                    filename=use_filename,
+                    expires_in=expires_in,
+                    object_content_type=object_content_type,
+                    response_content_type=chosen_resp_content_type,
+                    content_length=content_length,
+                    etag=etag,
+                    last_modified=str(last_modified) if last_modified is not None else None,
+                    endpoint_url=self.endpoint_url,
+                )
 
         return await self._retry_operation(
             _op,
@@ -1790,12 +1634,7 @@ class InoS3Helper:
         if not objects:
             bucket = bucket_name or self.bucket_name
             norm_key = self._normalize_key(s3_folder_key)
-            return {
-                "success": True,
-                "msg": f"No files found under s3://{bucket}/{norm_key}",
-                "links": [],
-                "count": 0
-            }
+            return ino_ok(f"No files found under s3://{bucket}/{norm_key}", links=[], count=0)
 
         bucket = bucket_name or self.bucket_name
         norm_folder_key = self._normalize_key(s3_folder_key)
@@ -1826,16 +1665,9 @@ class InoS3Helper:
                         url = await s3.generate_presigned_url(
                             "get_object", Params=params, ExpiresIn=expires_in
                         )
-                    return {
-                        "success": True,
-                        "url": url,
-                        "s3_key": obj_key,
-                        "filename": use_filename,
-                        "content_type": chosen_content_type,
-                        "content_length": obj.get("Size", 0),
-                    }
+                    return ino_ok(url=url, s3_key=obj_key, filename=use_filename, content_type=chosen_content_type, content_length=obj.get("Size", 0))
                 except Exception as e:
-                    return {"success": False, "s3_key": obj_key, "msg": str(e)}
+                    return ino_err(str(e), s3_key=obj_key)
 
         results = await asyncio.gather(*[_generate_link(obj) for obj in objects])
 
@@ -1853,12 +1685,7 @@ class InoS3Helper:
             else:
                 errors.append({"s3_key": r.get("s3_key", "unknown"), "msg": r.get("msg", "unknown error")})
 
-        result = {
-            "success": True,
-            "msg": f"Generated {len(links)} download links for s3://{bucket}/{norm_folder_key}",
-            "links": links,
-            "count": len(links),
-        }
+        result = ino_ok(f"Generated {len(links)} download links for s3://{bucket}/{norm_folder_key}", links=links, count=len(links))
         if errors:
             result["msg"] += f" ({len(errors)} failed)"
             result["errors"] = errors
@@ -1898,11 +1725,7 @@ class InoS3Helper:
 
         local_folder = Path(local_folder_path)
         if not local_folder.exists() or not local_folder.is_dir():
-            return {
-                "success": False,
-                "msg": f"❌ Local folder for verification is invalid: {local_folder_path}",
-                "error_code": "InvalidLocalFolder"
-            }
+            return ino_err(f"❌ Local folder for verification is invalid: {local_folder_path}", error_code="InvalidLocalFolder")
 
         try:
             # Build local files map: relative_path (with forward slashes) -> size
@@ -1955,20 +1778,19 @@ class InoS3Helper:
                 if missing_in_local:
                     summary_parts.append(f"{len(missing_in_local)} missing in local")
                 summary = ", ".join(summary_parts)
-                return {
-                    "success": False,
-                    "msg": f"❌ Verification failed: {summary}",
-                    "summary": summary,
-                    "bucket": bucket,
-                    "s3_folder_key": s3_folder_key,
-                    "local_folder_path": local_folder_path,
-                    "total_local_files": len(local_set),
-                    "total_remote_files": len(remote_set),
-                    "matched_files": 0,
-                    "missing_in_remote": missing_in_remote,
-                    "missing_in_local": missing_in_local,
-                    "size_mismatches": []
-                }
+                return ino_err(
+                    f"❌ Verification failed: {summary}",
+                    summary=summary,
+                    bucket=bucket,
+                    s3_folder_key=s3_folder_key,
+                    local_folder_path=local_folder_path,
+                    total_local_files=len(local_set),
+                    total_remote_files=len(remote_set),
+                    matched_files=0,
+                    missing_in_remote=missing_in_remote,
+                    missing_in_local=missing_in_local,
+                    size_mismatches=[]
+                )
 
             # Size mismatches for files present on both sides
             size_mismatches = []
@@ -1995,30 +1817,26 @@ class InoS3Helper:
                 summary_parts.append(f"{len(size_mismatches)} size mismatches")
             summary = ", ".join(summary_parts) if summary_parts else "All files are in sync"
 
-            result: Dict[str, Any] = {
-                "success": success,
-                "msg": f"✅ Verification passed: {summary}" if success else f"❌ Verification failed: {summary}",
-                "summary": summary,
-                "bucket": bucket,
-                "s3_folder_key": s3_folder_key,
-                "local_folder_path": local_folder_path,
-                "total_local_files": len(local_set),
-                "total_remote_files": len(remote_set),
-                "matched_files": len(local_set & remote_set) - len(size_mismatches),
-                "missing_in_remote": missing_in_remote,
-                "missing_in_local": missing_in_local,
-                "size_mismatches": size_mismatches
-            }
-
-            return result
+            extra_kwargs = dict(
+                summary=summary,
+                bucket=bucket,
+                s3_folder_key=s3_folder_key,
+                local_folder_path=local_folder_path,
+                total_local_files=len(local_set),
+                total_remote_files=len(remote_set),
+                matched_files=len(local_set & remote_set) - len(size_mismatches),
+                missing_in_remote=missing_in_remote,
+                missing_in_local=missing_in_local,
+                size_mismatches=size_mismatches
+            )
+            if success:
+                return ino_ok(f"✅ Verification passed: {summary}", **extra_kwargs)
+            else:
+                return ino_err(f"❌ Verification failed: {summary}", **extra_kwargs)
         except Exception as e:
             error_msg = f"❌ Verification error for folder {local_folder_path} <-> s3://{bucket}/{s3_folder_key}: {str(e)}"
             logging.error(error_msg)
-            return {
-                "success": False,
-                "msg": error_msg,
-                "error_code": type(e).__name__
-            }
+            return ino_err(error_msg, error_code=type(e).__name__)
 
 
     async def put_bytes(self, data: bytes, s3_key: str, bucket_name: Optional[str] = None, content_type: str = "application/octet-stream", metadata: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -2039,13 +1857,7 @@ class InoS3Helper:
                 if metadata:
                     params["Metadata"] = metadata
                 await s3.put_object(**params)
-                return {
-                    "success": True,
-                    "msg": f"✅ Uploaded bytes to s3://{bucket}/{norm_key}",
-                    "bucket": bucket,
-                    "s3_key": norm_key,
-                    "content_type": params["ContentType"]
-                }
+                return ino_ok(f"✅ Uploaded bytes to s3://{bucket}/{norm_key}", bucket=bucket, s3_key=norm_key, content_type=params["ContentType"])
         return await self._retry_operation(_op, f"put_bytes(len={len(data)} -> s3://{bucket}/{norm_key})")
 
     async def put_text(self, text: str, s3_key: str, bucket_name: Optional[str] = None, content_type: str = "text/plain; charset=utf-8", metadata: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -2069,13 +1881,7 @@ class InoS3Helper:
                         await stream.close()
                     except Exception:
                         pass
-                return {
-                    "success": True,
-                    "msg": f"✅ Downloaded text from s3://{bucket}/{norm_key}",
-                    "bucket": bucket,
-                    "s3_key": norm_key,
-                    "text": body.decode(encoding)
-                }
+                return ino_ok(f"✅ Downloaded text from s3://{bucket}/{norm_key}", bucket=bucket, s3_key=norm_key, text=body.decode(encoding))
         return await self._retry_operation(_op, f"get_text(s3://{bucket}/{norm_key})")
 
     async def verify_file(
@@ -2108,11 +1914,7 @@ class InoS3Helper:
 
         local_path = Path(local_file_path)
         if not local_path.exists() or not local_path.is_file():
-            return {
-                "success": False,
-                "msg": f"❌ Local file not found: {local_file_path}",
-                "error_code": "FileNotFound"
-            }
+            return ino_err(f"❌ Local file not found: {local_file_path}", error_code="FileNotFound")
 
         async def _md5_of_file(path: Path) -> str:
             import hashlib
@@ -2188,37 +1990,37 @@ class InoS3Helper:
                         reason_str = ", ".join(reasons) if reasons else "unknown reason"
                         msg = f"❌ File verification failed ({reason_str}): {local_file_path} <-> s3://{bucket}/{s3_key}"
 
-                    result: Dict[str, Any] = {
-                        "success": success,
-                        "msg": msg,
-                        "bucket": bucket,
-                        "s3_key": s3_key,
-                        "local_file": str(local_path),
-                        "exists_remote": True,
-                        "local_size": local_size,
-                        "remote_size": remote_size,
-                        "sizes_match": sizes_match,
-                        "etag": etag,
-                        "md5_requested": use_md5,
-                        "md5_supported": md5_supported,
-                        "md5_checked": md5_checked,
-                        "md5_match": md5_match,
-                        "sha256_checked": sha256_checked,
-                        "sha256_match": sha256_match
-                    }
-                    return result
+                    extra_kwargs = dict(
+                        bucket=bucket,
+                        s3_key=s3_key,
+                        local_file=str(local_path),
+                        exists_remote=True,
+                        local_size=local_size,
+                        remote_size=remote_size,
+                        sizes_match=sizes_match,
+                        etag=etag,
+                        md5_requested=use_md5,
+                        md5_supported=md5_supported,
+                        md5_checked=md5_checked,
+                        md5_match=md5_match,
+                        sha256_checked=sha256_checked,
+                        sha256_match=sha256_match
+                    )
+                    if success:
+                        return ino_ok(msg, **extra_kwargs)
+                    else:
+                        return ino_err(msg, **extra_kwargs)
             except ClientError as e:
                 code = e.response.get("Error", {}).get("Code")
                 if code in ("404", "NoSuchKey"):
-                    return {
-                        "success": False,
-                        "msg": f"❌ File verification failed: remote object not found s3://{bucket}/{s3_key}",
-                        "error_code": "NoSuchKey",
-                        "bucket": bucket,
-                        "s3_key": s3_key,
-                        "local_file": str(local_path),
-                        "exists_remote": False
-                    }
+                    return ino_err(
+                        f"❌ File verification failed: remote object not found s3://{bucket}/{s3_key}",
+                        error_code="NoSuchKey",
+                        bucket=bucket,
+                        s3_key=s3_key,
+                        local_file=str(local_path),
+                        exists_remote=False
+                    )
                 raise
 
         return await self._retry_operation(
