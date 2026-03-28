@@ -159,6 +159,35 @@ async def run_tests():
                 passed += 1
                 print(f"  [{status}] {name}")
 
+        def check_fail(name: str, result: dict, extra_check=None):
+            """Check that a result is a failure (for error-path tests)."""
+            nonlocal passed, failed
+            ok = not result.get("success", False)
+            if ok and extra_check:
+                ok = extra_check(result)
+            status = "PASS" if ok else "FAIL"
+            if not ok:
+                failed += 1
+                print(f"  [{status}] {name} (expected failure but got success)")
+            else:
+                passed += 1
+                print(f"  [{status}] {name}")
+
+        # ==================================================================
+        # 0. Cleanup S3 from any previous test run
+        # ==================================================================
+        print("\n--- 0. Cleanup S3 (previous run) ---")
+
+        prev_objs = await s3.list_objects(prefix=s3_root, max_keys=1000)
+        if prev_objs.get("success"):
+            prev_list = prev_objs.get("objects", [])
+            if prev_list:
+                for obj in prev_list:
+                    await s3.delete_object(obj["Key"])
+                print(f"  Cleaned up {len(prev_list)} leftover objects")
+            else:
+                print(f"  No leftover objects found")
+
         # ==================================================================
         # 1. Upload single files
         # ==================================================================
@@ -190,18 +219,11 @@ async def run_tests():
         print("\n--- 1c. Upload non-existent file (error) ---")
 
         res = await s3.upload_file("/tmp/does_not_exist_xyz.txt", s3_root + "ghost.txt")
-        check(
+        check_fail(
             "upload_file non-existent (should fail)",
             res,
-            lambda r: r.get("success") is False and r.get("error_code") == "FileNotFound",
+            lambda r: r.get("error_code") == "FileNotFound",
         )
-        # invert: we expect failure
-        if not res.get("success"):
-            passed += 1  # undo the fail from check
-            failed -= 1
-        else:
-            failed += 1
-            passed -= 1
 
         # ==================================================================
         # 2. Verify uploaded files exist
@@ -295,12 +317,7 @@ async def run_tests():
         print("\n--- 5b. Download non-existent key (error) ---")
 
         res = await s3.download_file(s3_root + "no_such_file_xyz.bin", str(LOCAL_DOWNLOAD_DIR / "ghost.bin"))
-        if not res.get("success"):
-            passed += 1
-            print(f"  [PASS] download_file non-existent key (expected failure)")
-        else:
-            failed += 1
-            print(f"  [FAIL] download_file non-existent key should have failed")
+        check_fail("download_file non-existent key (should fail)", res)
 
         # ==================================================================
         # 6. download_file overwrite=False (should skip)
@@ -427,12 +444,7 @@ async def run_tests():
             s3_folder_key=folder_s3_key,
             local_folder_path="/tmp/does_not_exist_folder_xyz",
         )
-        if not res.get("success"):
-            passed += 1
-            print(f"  [PASS] upload_folder non-existent path (expected failure)")
-        else:
-            failed += 1
-            print(f"  [FAIL] upload_folder non-existent path should have failed")
+        check_fail("upload_folder non-existent (should fail)", res, lambda r: r.get("error_code") == "FolderNotFound")
 
         # ==================================================================
         # 10. Download folder and verify
@@ -538,7 +550,8 @@ async def run_tests():
         # Upload test files to S3 under sync_test/ prefix first
         for rel_name, local_path in test_files.items():
             s3_key = sync_s3_key + rel_name.replace("\\", "/")
-            await s3.upload_file(str(local_path), s3_key)
+            res = await s3.upload_file(str(local_path), s3_key)
+            check(f"sync setup upload {rel_name}", res)
 
         # 12a. Initial sync — should download all files
         res = await s3.sync_folder(
@@ -657,12 +670,7 @@ async def run_tests():
 
         # Confirm the extra remote file was actually deleted
         extra_exists = await s3.object_exists(extra_s3_key)
-        if extra_exists.get("exists") is False:
-            passed += 1
-            print(f"  [PASS] stale remote object deleted")
-        else:
-            failed += 1
-            print(f"  [FAIL] stale remote object still exists")
+        check("stale remote object deleted", extra_exists, lambda r: r.get("exists") is False)
 
         # 13d. Verify uploaded content by downloading and comparing hashes
         sync_verify_dir = LOCAL_DOWNLOAD_DIR / "sync_upload_verify"
@@ -808,15 +816,7 @@ async def run_tests():
                 local_file_path=str(local_hello),
                 s3_key=s3_root + "no_such_file_xyz.bin",
             )
-            if not res.get("success") and res.get("error_code") == "NoSuchKey":
-                passed += 1
-                print(f"  [PASS] verify_file non-existent remote (expected failure)")
-            elif not res.get("success"):
-                passed += 1
-                print(f"  [PASS] verify_file non-existent remote (failed as expected: {res.get('error_code')})")
-            else:
-                failed += 1
-                print(f"  [FAIL] verify_file non-existent remote should have failed")
+            check_fail("verify_file non-existent remote (should fail)", res)
 
         # ------------------------------------------------------------------
         # 16e. Verify file with non-existent local file
@@ -827,12 +827,7 @@ async def run_tests():
             local_file_path="/tmp/does_not_exist_xyz.txt",
             s3_key=s3_root + "hello.txt",
         )
-        if not res.get("success") and res.get("error_code") == "FileNotFound":
-            passed += 1
-            print(f"  [PASS] verify_file non-existent local (expected failure)")
-        else:
-            failed += 1
-            print(f"  [FAIL] verify_file non-existent local should have failed with FileNotFound")
+        check_fail("verify_file non-existent local (should fail)", res, lambda r: r.get("error_code") == "FileNotFound")
 
         # ==================================================================
         # 17. Delete test objects
