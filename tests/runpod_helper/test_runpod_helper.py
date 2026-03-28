@@ -189,7 +189,7 @@ async def run_tests():
     # ------------------------------------------------------------------
     print("\n--- Image input (base64 data URI) ---")
 
-    image_path = Path(__file__).resolve().parent / "image.jpg"
+    image_path = Path(__file__).resolve().parents[1] / "assets" / "image.jpg"
     if image_path.exists():
         image_bytes = image_path.read_bytes()
         image_b64 = base64.b64encode(image_bytes).decode("ascii")
