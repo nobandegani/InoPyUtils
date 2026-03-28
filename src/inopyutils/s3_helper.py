@@ -41,7 +41,7 @@ class InoS3Helper:
         self.retries = retries
         self.config: Optional[Config] = None
         self.session = None
-        self.use_emoji: bool = True
+
         self.transfer_config: Optional[TransferConfig] = None
         # Always call init to set up session, config, and transfer_config
         self.init(
@@ -811,7 +811,7 @@ class InoS3Helper:
             s3_key: str,
             local_folder_path: str,
             sync_local: bool = True,
-            concc: int = 5,
+            concurrency: int = 5,
             bucket_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -833,7 +833,7 @@ class InoS3Helper:
             s3_key: S3 key prefix to sync from/to
             local_folder_path: Local folder path
             sync_local: If True, sync S3 to local. If False, sync local to S3
-            concc: Maximum concurrent file sync operations
+            concurrency: Maximum concurrent file sync operations
             bucket_name: S3 bucket name (uses default if not provided)
 
         Returns:
@@ -871,7 +871,7 @@ class InoS3Helper:
             "s3_key": prefix,
             "local_folder_path": local_folder_path,
             "sync_local": sync_local,
-            "concc": concc,
+            "concurrency": concurrency,
             "total_remote_files": 0,
             "total_local_files": 0,
             "downloaded": 0,
@@ -887,11 +887,11 @@ class InoS3Helper:
 
         if sync_local:
             return await self._sync_remote_to_local(
-                bucket, prefix, local_folder, result, concc
+                bucket, prefix, local_folder, result, concurrency
             )
         else:
             return await self._sync_local_to_remote(
-                bucket, prefix, local_folder, result, concc
+                bucket, prefix, local_folder, result, concurrency
             )
 
     async def _sync_remote_to_local(
@@ -900,10 +900,10 @@ class InoS3Helper:
             prefix: str,
             local_folder: Path,
             result: Dict[str, Any],
-            concc: int
+            concurrency: int
     ) -> Dict[str, Any]:
         """Internal: sync S3 prefix -> local folder (used when sync_local=True)."""
-        max_concurrent = max(1, int(concc))
+        max_concurrent = max(1, int(concurrency))
         file_attempt_limit = max(3, self.retries + 1)
         transfer_config = TransferConfig(
             multipart_threshold=64 * 1024 * 1024,
@@ -1140,10 +1140,10 @@ class InoS3Helper:
             prefix: str,
             local_folder: Path,
             result: Dict[str, Any],
-            concc: int
+            concurrency: int
     ) -> Dict[str, Any]:
         """Internal: sync local folder -> S3 prefix (used when sync_local=False)."""
-        max_concurrent = max(1, int(concc))
+        max_concurrent = max(1, int(concurrency))
         file_attempt_limit = max(3, self.retries + 1)
 
         try:
@@ -2171,13 +2171,11 @@ class InoS3Helper:
 
                     msg: str
                     if success:
-                        parts = ["✅ File verified"]
-                        if not sizes_match:
-                            parts.append("(size)!")  # should not happen when success True
-                        if md5_checked:
-                            parts.append("(MD5 matched)") if md5_match else parts.append("(MD5 skipped)")
-                        if sha256_checked:
-                            parts.append("(SHA256 matched)") if sha256_match else parts.append("(SHA256 mismatch)")
+                        parts = ["✅ File verified (size matched)"]
+                        if md5_checked and md5_match:
+                            parts.append("(MD5 matched)")
+                        if sha256_checked and sha256_match:
+                            parts.append("(SHA256 matched)")
                         msg = " ".join(parts) + f": {local_file_path} <-> s3://{bucket}/{s3_key}"
                     else:
                         reasons = []
