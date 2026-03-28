@@ -1,3 +1,4 @@
+import asyncio
 from typing import Optional
 
 from .http_helper import InoHttpHelper
@@ -14,10 +15,14 @@ class InoRunpodHelper:
             image: Optional[str] = None,
             temperature: float = 0.7,
             max_tokens: int = 1024,
+            timeout: float = 300.0,
+            max_retries: int = 3,
+            retry_delay: float = 5.0,
     ) -> dict:
         """Send a synchronous chat completion request to a RunPod serverless vLLM endpoint.
 
         Uses the OpenAI-compatible route for proper vision/multimodal support.
+        Retries automatically when the job is IN_QUEUE, IN_PROGRESS, or FAILED.
 
         Args:
             url: RunPod runsync endpoint URL.
@@ -28,6 +33,9 @@ class InoRunpodHelper:
             image: Optional image URL or base64 data URI (e.g. "https://..." or "data:image/jpeg;base64,...").
             temperature: Sampling temperature.
             max_tokens: Max tokens in the response.
+            timeout: Total HTTP timeout in seconds (default 300s / 5 minutes).
+            max_retries: Max number of retries for IN_QUEUE/IN_PROGRESS/FAILED statuses.
+            retry_delay: Seconds to wait between retries.
         """
         try:
             headers = {
@@ -61,22 +69,36 @@ class InoRunpodHelper:
                 }
             }
 
-            async with InoHttpHelper() as http_client:
-                response = await http_client.post(
-                    url=url,
-                    headers=headers,
-                    json=payload,
-                    json_response=True
-                )
+            retryable_statuses = {"IN_QUEUE", "IN_PROGRESS", "FAILED"}
+            data = {}
+            status = None
 
-            if ino_is_err(response):
-                return ino_err(response.get("msg", "request failed"),
-                               status_code=response.get("status_code"))
+            for attempt in range(1 + max_retries):
+                async with InoHttpHelper(
+                    timeout_total=timeout,
+                    timeout_sock_read=timeout,
+                ) as http_client:
+                    response = await http_client.post(
+                        url=url,
+                        headers=headers,
+                        json=payload,
+                        json_response=True
+                    )
 
-            data = response.get("data", {})
-            status = data.get("status")
+                if ino_is_err(response):
+                    return ino_err(response.get("msg", "request failed"),
+                                   status_code=response.get("status_code"))
 
-            if status != "COMPLETED":
+                data = response.get("data", {})
+                status = data.get("status")
+
+                if status == "COMPLETED":
+                    break
+
+                if status in retryable_statuses and attempt < max_retries:
+                    await asyncio.sleep(retry_delay)
+                    continue
+
                 return ino_err(f"runsync not completed: {status}",
                                error_code=data.get("error"),
                                status=status)
