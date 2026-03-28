@@ -606,7 +606,8 @@ class InoS3Helper:
             local_folder_path: str,
             bucket_name: Optional[str] = None,
             max_concurrent: int = 5,
-            verify: bool = False
+            verify: bool = False,
+            overwrite: bool = False
     ) -> Dict[str, Any]:
         """
         Download an entire folder from S3, preserving directory structure locally
@@ -616,9 +617,12 @@ class InoS3Helper:
             local_folder_path: Local directory path where the folder will be saved
             bucket_name: S3 bucket name (uses default if not provided)
             max_concurrent: Maximum number of concurrent downloads (default: 5)
+            verify: If True, verify folder sync after download
+            overwrite: If False (default), skip files that already exist locally and match S3 (size check).
+                       If True, always download regardless.
 
         Returns:
-            Dict[str, Any]: Status information with success/failure counts and details
+            Dict[str, Any]: Status information with success/failure/skipped counts and details
         """
         err = self._validate_bucket(bucket_name)
         if err:
@@ -636,6 +640,7 @@ class InoS3Helper:
             "msg": "",
             "total_files": 0,
             "downloaded_successfully": 0,
+            "skipped_files": 0,
             "failed_downloads": 0,
             "errors": [],
             "bucket": bucket,
@@ -683,8 +688,26 @@ class InoS3Helper:
                         s3_key = obj["Key"]
                         relative_path = s3_key[len(s3_folder_key):]
                         local_file_path = local_folder / relative_path
-                        
+
                         try:
+                            # Skip if file exists and matches S3 (unless overwrite=True)
+                            if not overwrite and local_file_path.exists():
+                                verification = await self.verify_file(
+                                    local_file_path=str(local_file_path),
+                                    s3_key=s3_key,
+                                    bucket_name=bucket
+                                )
+                                if verification.get("success", False):
+                                    return {
+                                        "s3_key": s3_key,
+                                        "relative_path": relative_path,
+                                        "result": {
+                                            "success": True,
+                                            "msg": f"Skipped {relative_path} (already matches)",
+                                            "skipped": True
+                                        }
+                                    }
+
                             # Ensure parent directories exist for nested files
                             local_file_path.parent.mkdir(parents=True, exist_ok=True)
                             # Use the shared client to download
@@ -695,6 +718,7 @@ class InoS3Helper:
                                 "result": {
                                     "success": True,
                                     "msg": f"Downloaded {relative_path}",
+                                    "skipped": False
                                 }
                             }
                         except Exception as e:
@@ -726,8 +750,12 @@ class InoS3Helper:
                 download_outcome = download_result["result"]
                 
                 if download_outcome.get("success", False):
-                    result["downloaded_successfully"] += 1
-                    logging.debug(f"Successfully downloaded {relative_path}")
+                    if download_outcome.get("skipped", False):
+                        result["skipped_files"] += 1
+                        logging.debug(f"Skipped {relative_path} (already matches)")
+                    else:
+                        result["downloaded_successfully"] += 1
+                        logging.debug(f"Successfully downloaded {relative_path}")
                 else:
                     result["failed_downloads"] += 1
                     error_msg = f"Failed to download {relative_path}: {download_outcome.get('msg', 'Unknown error')}"
@@ -737,7 +765,7 @@ class InoS3Helper:
             result["success"] = result["failed_downloads"] == 0
             
             if result["success"]:
-                result["msg"] = f"✅ Successfully downloaded folder s3://{bucket}/{s3_folder_key} to {local_folder_path} ({result['downloaded_successfully']} files)"
+                result["msg"] = f"✅ Successfully downloaded folder s3://{bucket}/{s3_folder_key} to {local_folder_path} ({result['downloaded_successfully']} downloaded, {result['skipped_files']} skipped)"
                 logging.info(result["msg"])
             else:
                 result["msg"] = f"❌ Folder download completed with {result['failed_downloads']} failures. Downloaded {result['downloaded_successfully']}/{result['total_files']} files"
@@ -1346,7 +1374,8 @@ class InoS3Helper:
             bucket_name: Optional[str] = None,
             max_concurrent: int = 5,
             verify: bool = False,
-            extra_args_provider: Optional[Callable[[str], Dict[str, Any]]] = None
+            extra_args_provider: Optional[Callable[[str], Dict[str, Any]]] = None,
+            overwrite: bool = False
     ) -> Dict[str, Any]:
         """
         Upload an entire folder to S3, preserving directory structure
@@ -1357,9 +1386,13 @@ class InoS3Helper:
             local_folder_path: Local directory path to upload
             bucket_name: S3 bucket name (uses default if not provided)
             max_concurrent: Maximum number of concurrent uploads (default: 5)
+            verify: If True, verify folder sync after upload
+            extra_args_provider: Optional callable that returns ExtraArgs dict for each file (receives relative path)
+            overwrite: If False (default), skip files that already exist on S3 and match locally (size check).
+                       If True, always upload regardless.
 
         Returns:
-            Dict[str, Any]: Status information with success/failure counts and details
+            Dict[str, Any]: Status information with success/failure/skipped counts and details
         """
         err = self._validate_bucket(bucket_name)
         if err:
@@ -1400,6 +1433,7 @@ class InoS3Helper:
             "msg": "",
             "total_files": 0,
             "uploaded_successfully": 0,
+            "skipped_files": 0,
             "failed_uploads": 0,
             "errors": [],
             "bucket": bucket,
@@ -1439,6 +1473,23 @@ class InoS3Helper:
                     """Upload a single file with semaphore control using shared client"""
                     async with semaphore:
                         try:
+                            # Skip if file already exists on S3 and matches locally (unless overwrite=True)
+                            if not overwrite:
+                                verification = await self.verify_file(
+                                    local_file_path=file_info["local_path"],
+                                    s3_key=file_info["s3_key"],
+                                    bucket_name=bucket
+                                )
+                                if verification.get("success", False):
+                                    return {
+                                        "file_info": file_info,
+                                        "result": {
+                                            "success": True,
+                                            "msg": f"Skipped {file_info['relative_path']} (already matches)",
+                                            "skipped": True
+                                        }
+                                    }
+
                             # Infer content type
                             guess, _ = mimetypes.guess_type(file_info["local_path"])
                             # Start with provider-supplied args (if any) so they can override guesses
@@ -1462,7 +1513,8 @@ class InoS3Helper:
                                 "file_info": file_info,
                                 "result": {
                                     "success": True,
-                                    "msg": f"Uploaded {file_info['relative_path']}"
+                                    "msg": f"Uploaded {file_info['relative_path']}",
+                                    "skipped": False
                                 }
                             }
                         except Exception as e:
@@ -1492,8 +1544,12 @@ class InoS3Helper:
                 upload_outcome = upload_result["result"]
                 
                 if upload_outcome.get("success", False):
-                    result["uploaded_successfully"] += 1
-                    logging.debug(f"Successfully uploaded {file_info['relative_path']}")
+                    if upload_outcome.get("skipped", False):
+                        result["skipped_files"] += 1
+                        logging.debug(f"Skipped {file_info['relative_path']} (already matches)")
+                    else:
+                        result["uploaded_successfully"] += 1
+                        logging.debug(f"Successfully uploaded {file_info['relative_path']}")
                 else:
                     result["failed_uploads"] += 1
                     error_msg = f"Failed to upload {file_info['relative_path']}: {upload_outcome.get('msg', 'Unknown error')}"
@@ -1504,7 +1560,7 @@ class InoS3Helper:
             result["success"] = result["failed_uploads"] == 0
             
             if result["success"]:
-                result["msg"] = f"✅ Successfully uploaded folder {local_folder_path} to s3://{bucket}/{s3_folder_key} ({result['uploaded_successfully']} files)"
+                result["msg"] = f"✅ Successfully uploaded folder {local_folder_path} to s3://{bucket}/{s3_folder_key} ({result['uploaded_successfully']} uploaded, {result['skipped_files']} skipped)"
                 logging.info(result["msg"])
             else:
                 result["msg"] = f"❌ Folder upload failed with {result['failed_uploads']} failures. Uploaded {result['uploaded_successfully']}/{result['total_files']} files"
