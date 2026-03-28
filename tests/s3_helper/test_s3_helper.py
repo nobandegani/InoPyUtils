@@ -224,24 +224,29 @@ async def run_tests():
                     print(f"         upload={orig_hash[:16]}... download={dl_hash[:16]}...")
 
         # ------------------------------------------------------------------
-        # 6. Download via get_object (download_file_object)
+        # 6. download_file overwrite=False (should skip)
         # ------------------------------------------------------------------
-        print("\n--- Download file object ---")
+        print("\n--- download_file overwrite=False (skip) ---")
 
-        dl_obj_path = LOCAL_DOWNLOAD_DIR / "object" / "hello.txt"
-        dl_obj_path.parent.mkdir(parents=True, exist_ok=True)
-        res = await s3.download_file_object(s3_root + "hello.txt", str(dl_obj_path))
-        check("download_file_object hello.txt", res)
-        if dl_obj_path.exists():
-            orig_hash = _sha256(test_files["hello.txt"])
-            dl_hash = _sha256(dl_obj_path)
-            match = orig_hash == dl_hash
-            if match:
-                passed += 1
-                print(f"  [PASS] sha256 match (file_object)")
-            else:
-                failed += 1
-                print(f"  [FAIL] sha256 mismatch (file_object)")
+        dl_skip_path = LOCAL_DOWNLOAD_DIR / "single" / "hello.txt"
+        res = await s3.download_file(s3_root + "hello.txt", str(dl_skip_path), overwrite=False)
+        check(
+            "download_file skip (overwrite=False)",
+            res,
+            lambda r: r.get("skipped") is True,
+        )
+
+        # ------------------------------------------------------------------
+        # 6b. download_file overwrite=True (should re-download)
+        # ------------------------------------------------------------------
+        print("\n--- download_file overwrite=True ---")
+
+        res = await s3.download_file(s3_root + "hello.txt", str(dl_skip_path), overwrite=True)
+        check(
+            "download_file force (overwrite=True)",
+            res,
+            lambda r: r.get("skipped") is False,
+        )
 
         # ------------------------------------------------------------------
         # 7. put_bytes / get_text round-trip
@@ -283,6 +288,40 @@ async def run_tests():
         check("upload_folder", res, lambda r: r.get("uploaded_successfully", 0) == len(test_files))
 
         # ------------------------------------------------------------------
+        # 9b. Upload folder overwrite=False (should skip all)
+        # ------------------------------------------------------------------
+        print("\n--- Upload folder overwrite=False (skip) ---")
+
+        res = await s3.upload_folder(
+            s3_folder_key=folder_s3_key,
+            local_folder_path=str(LOCAL_UPLOAD_DIR),
+            overwrite=False,
+        )
+        check(
+            "upload_folder skip (overwrite=False)",
+            res,
+            lambda r: r.get("skipped_files", 0) == len(test_files)
+                       and r.get("uploaded_successfully", -1) == 0,
+        )
+
+        # ------------------------------------------------------------------
+        # 9c. Upload folder overwrite=True (should re-upload all)
+        # ------------------------------------------------------------------
+        print("\n--- Upload folder overwrite=True ---")
+
+        res = await s3.upload_folder(
+            s3_folder_key=folder_s3_key,
+            local_folder_path=str(LOCAL_UPLOAD_DIR),
+            overwrite=True,
+        )
+        check(
+            "upload_folder force (overwrite=True)",
+            res,
+            lambda r: r.get("uploaded_successfully", 0) == len(test_files)
+                       and r.get("skipped_files", -1) == 0,
+        )
+
+        # ------------------------------------------------------------------
         # 10. Download folder and verify
         # ------------------------------------------------------------------
         print("\n--- Download folder ---")
@@ -313,6 +352,40 @@ async def run_tests():
                     print(f"  [FAIL] folder missing {rel_name}")
 
         # ------------------------------------------------------------------
+        # 10b. Download folder overwrite=False (should skip all)
+        # ------------------------------------------------------------------
+        print("\n--- Download folder overwrite=False (skip) ---")
+
+        res = await s3.download_folder(
+            s3_folder_key=folder_s3_key,
+            local_folder_path=str(dl_folder),
+            overwrite=False,
+        )
+        check(
+            "download_folder skip (overwrite=False)",
+            res,
+            lambda r: r.get("skipped_files", 0) == len(test_files)
+                       and r.get("downloaded_successfully", -1) == 0,
+        )
+
+        # ------------------------------------------------------------------
+        # 10c. Download folder overwrite=True (should re-download all)
+        # ------------------------------------------------------------------
+        print("\n--- Download folder overwrite=True ---")
+
+        res = await s3.download_folder(
+            s3_folder_key=folder_s3_key,
+            local_folder_path=str(dl_folder),
+            overwrite=True,
+        )
+        check(
+            "download_folder force (overwrite=True)",
+            res,
+            lambda r: r.get("downloaded_successfully", 0) == len(test_files)
+                       and r.get("skipped_files", -1) == 0,
+        )
+
+        # ------------------------------------------------------------------
         # 11. Verify folder sync
         # ------------------------------------------------------------------
         print("\n--- Verify folder sync ---")
@@ -341,7 +414,7 @@ async def run_tests():
             s3_key=sync_s3_key,
             local_folder_path=str(sync_local_dir),
             sync_local=True,
-            concc=3,
+            concurrency=3,
         )
         check(
             "sync_folder S3->local (initial)",
@@ -373,7 +446,7 @@ async def run_tests():
             s3_key=sync_s3_key,
             local_folder_path=str(sync_local_dir),
             sync_local=True,
-            concc=3,
+            concurrency=3,
         )
         check(
             "sync_folder S3->local (re-sync skip)",
@@ -390,7 +463,7 @@ async def run_tests():
             s3_key=sync_s3_key,
             local_folder_path=str(sync_local_dir),
             sync_local=True,
-            concc=3,
+            concurrency=3,
         )
         check(
             "sync_folder S3->local (remove stale)",
@@ -411,7 +484,7 @@ async def run_tests():
             s3_key=sync_remote_key,
             local_folder_path=str(LOCAL_UPLOAD_DIR),
             sync_local=False,
-            concc=3,
+            concurrency=3,
         )
         check(
             "sync_folder local->S3 (initial)",
@@ -426,7 +499,7 @@ async def run_tests():
             s3_key=sync_remote_key,
             local_folder_path=str(LOCAL_UPLOAD_DIR),
             sync_local=False,
-            concc=3,
+            concurrency=3,
         )
         check(
             "sync_folder local->S3 (re-sync skip)",
@@ -443,7 +516,7 @@ async def run_tests():
             s3_key=sync_remote_key,
             local_folder_path=str(LOCAL_UPLOAD_DIR),
             sync_local=False,
-            concc=3,
+            concurrency=3,
         )
         check(
             "sync_folder local->S3 (remove stale remote)",
