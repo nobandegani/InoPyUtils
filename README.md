@@ -58,18 +58,23 @@ async def main():
         bucket_name="your-bucket",
         retries=5,
     ) as s3:
-        # Upload & download
+        # Upload & download (overwrite=False by default, skips if file matches)
         await s3.upload_file("local.txt", "remote/path/file.txt")
         await s3.download_file("remote/path/file.txt", "downloaded.txt")
+        await s3.download_file("remote/path/file.txt", "downloaded.txt", overwrite=True)  # force re-download
 
         # Check existence, list objects
         exists = await s3.object_exists("remote/path/file.txt")
         objects = await s3.list_objects(prefix="remote/path/")
 
-        # Folder operations
-        await s3.upload_folder("remote/folder/", "local_folder/")
-        await s3.download_folder("remote/folder/", "local_download/")
-        await s3.sync_folder("remote/folder/", "local_sync/")
+        # Folder operations (overwrite=False by default, skips unchanged files)
+        await s3.upload_folder(s3_folder_key="remote/folder/", local_folder_path="local_folder/")
+        await s3.download_folder(s3_folder_key="remote/folder/", local_folder_path="local_download/")
+        await s3.sync_folder(s3_key="remote/folder/", local_folder_path="local_sync/")
+
+        # Verify files match between local and S3
+        await s3.verify_file("local.txt", "remote/path/file.txt", use_md5=True)
+        await s3.verify_folder_sync(s3_folder_key="remote/folder/", local_folder_path="local_folder/")
 
         # Quick text/bytes
         await s3.put_text("hello", "remote/hello.txt")
