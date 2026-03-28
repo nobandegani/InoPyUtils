@@ -408,7 +408,8 @@ class InoS3Helper:
             self,
             s3_key: str,
             local_file_path: str,
-            bucket_name: Optional[str] = None
+            bucket_name: Optional[str] = None,
+            overwrite: bool = False
     ) -> Dict[str, Any]:
         """
         Download a file from S3 with automatic retry on failure
@@ -417,15 +418,35 @@ class InoS3Helper:
             s3_key: S3 key (path) of the file to download
             local_file_path: Local path where the file will be saved
             bucket_name: S3 bucket name (uses default if not provided)
+            overwrite: If False (default), skip download when local file exists and matches S3 (size check).
+                       If True, always download regardless.
 
         Returns:
-            Dict with "success", "msg", "s3_key", "bucket", "local_file", and optional "error_code"
+            Dict with "success", "msg", "s3_key", "bucket", "local_file", and optional "error_code", "skipped"
         """
         err = self._validate_bucket(bucket_name)
         if err:
             return err
         bucket = bucket_name or self.bucket_name
         norm_key = self._normalize_key(s3_key)
+
+        if not overwrite and Path(local_file_path).exists():
+            verification = await self.verify_file(
+                local_file_path=local_file_path,
+                s3_key=norm_key,
+                bucket_name=bucket
+            )
+            if verification.get("success", False):
+                skip_msg = f"⏭️ Skipped download, local file matches S3: {local_file_path}"
+                logging.info(skip_msg)
+                return {
+                    "success": True,
+                    "msg": skip_msg,
+                    "s3_key": norm_key,
+                    "bucket": bucket,
+                    "local_file": local_file_path,
+                    "skipped": True
+                }
 
         async def _download_operation() -> Dict[str, Any]:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
@@ -439,7 +460,8 @@ class InoS3Helper:
                     "msg": success_msg,
                     "s3_key": norm_key,
                     "bucket": bucket,
-                    "local_file": local_file_path
+                    "local_file": local_file_path,
+                    "skipped": False
                 }
 
         return await self._retry_operation(
