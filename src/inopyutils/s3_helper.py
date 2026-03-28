@@ -1901,11 +1901,12 @@ class InoS3Helper:
             s3_key: S3 key (path) to compare with
             bucket_name: S3 bucket name (uses default if not provided)
             use_md5: If True and ETag is a simple MD5 (no "-") then compute local MD5 and compare
+            use_sha256: If True and remote object has ChecksumSHA256, compute local SHA256 and compare
 
         Returns:
             Dict with fields: success, msg, bucket, s3_key, local_file, exists_remote,
-            local_size, remote_size, sizes_match, etag, md5_checked, md5_match (optional),
-            and error_code on failure
+            local_size, remote_size, sizes_match, etag, md5_checked, md5_match,
+            sha256_checked, sha256_match, and error_code on failure
         """
         err = self._validate_bucket(bucket_name)
         if err:
