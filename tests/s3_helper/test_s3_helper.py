@@ -159,10 +159,10 @@ async def run_tests():
                 passed += 1
                 print(f"  [{status}] {name}")
 
-        # ------------------------------------------------------------------
+        # ==================================================================
         # 1. Upload single files
-        # ------------------------------------------------------------------
-        print("\n--- Upload single files ---")
+        # ==================================================================
+        print("\n--- 1. Upload single files ---")
 
         for rel_name, local_path in test_files.items():
             s3_key = s3_root + rel_name.replace("\\", "/")
@@ -170,9 +170,43 @@ async def run_tests():
             check(f"upload_file {rel_name}", res)
 
         # ------------------------------------------------------------------
-        # 2. Verify uploaded files exist
+        # 1b. Upload with extra_args (custom ContentType + Metadata)
         # ------------------------------------------------------------------
-        print("\n--- Verify objects exist ---")
+        print("\n--- 1b. Upload with extra_args ---")
+
+        res = await s3.upload_file(
+            str(test_files["hello.txt"]),
+            s3_root + "hello_custom.txt",
+            extra_args={
+                "ContentType": "text/plain; charset=utf-8",
+                "Metadata": {"test-key": "test-value"},
+            },
+        )
+        check("upload_file with extra_args", res)
+
+        # ------------------------------------------------------------------
+        # 1c. Upload non-existent local file (error path)
+        # ------------------------------------------------------------------
+        print("\n--- 1c. Upload non-existent file (error) ---")
+
+        res = await s3.upload_file("/tmp/does_not_exist_xyz.txt", s3_root + "ghost.txt")
+        check(
+            "upload_file non-existent (should fail)",
+            res,
+            lambda r: r.get("success") is False and r.get("error_code") == "FileNotFound",
+        )
+        # invert: we expect failure
+        if not res.get("success"):
+            passed += 1  # undo the fail from check
+            failed -= 1
+        else:
+            failed += 1
+            passed -= 1
+
+        # ==================================================================
+        # 2. Verify uploaded files exist
+        # ==================================================================
+        print("\n--- 2. Verify objects exist ---")
 
         for rel_name in test_files:
             s3_key = s3_root + rel_name.replace("\\", "/")
@@ -180,27 +214,59 @@ async def run_tests():
             check(f"object_exists {rel_name}", res, lambda r: r.get("exists") is True)
 
         # ------------------------------------------------------------------
-        # 3. List objects under test root
+        # 2b. object_exists for non-existent key
         # ------------------------------------------------------------------
-        print("\n--- List objects ---")
+        print("\n--- 2b. object_exists non-existent ---")
+
+        res = await s3.object_exists(s3_root + "this_does_not_exist_xyz.bin")
+        check(
+            "object_exists non-existent",
+            res,
+            lambda r: r.get("exists") is False,
+        )
+
+        # ==================================================================
+        # 3. List objects under test root
+        # ==================================================================
+        print("\n--- 3. List objects ---")
 
         res = await s3.list_objects(prefix=s3_root)
-        check("list_objects", res, lambda r: r.get("count", 0) >= len(test_files))
+        check("list_objects (recursive)", res, lambda r: r.get("count", 0) >= len(test_files))
         if res.get("success"):
             print(f"         found {res['count']} objects")
 
         # ------------------------------------------------------------------
-        # 4. Count files in folder
+        # 3b. List objects non-recursive (with delimiter)
         # ------------------------------------------------------------------
-        print("\n--- Count files ---")
+        print("\n--- 3b. List objects non-recursive ---")
+
+        res = await s3.list_objects(prefix=s3_root, recursive=False)
+        check("list_objects (non-recursive)", res)
+        if res.get("success"):
+            print(f"         found {res.get('count', 0)} objects (flat), prefixes={res.get('common_prefixes', [])}")
+
+        # ==================================================================
+        # 4. Count files in folder
+        # ==================================================================
+        print("\n--- 4. Count files (recursive) ---")
 
         res = await s3.count_files_in_folder(s3_root, recursive=True)
-        check("count_files_in_folder", res, lambda r: r.get("count", 0) >= len(test_files))
+        check("count_files_in_folder (recursive)", res, lambda r: r.get("count", 0) >= len(test_files))
 
         # ------------------------------------------------------------------
-        # 5. Download single files and verify content
+        # 4b. Count files non-recursive
         # ------------------------------------------------------------------
-        print("\n--- Download single files ---")
+        print("\n--- 4b. Count files (non-recursive) ---")
+
+        res = await s3.count_files_in_folder(s3_root, recursive=False)
+        check("count_files_in_folder (non-recursive)", res)
+        if res.get("success"):
+            print(f"         count={res.get('count', 0)} (flat, excludes sub/ contents)")
+
+        # ==================================================================
+        # 5. Download single files and verify content
+        # ==================================================================
+        print("\n--- 5. Download single files ---")
 
         LOCAL_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
         for rel_name, local_upload_path in test_files.items():
@@ -224,9 +290,22 @@ async def run_tests():
                     print(f"         upload={orig_hash[:16]}... download={dl_hash[:16]}...")
 
         # ------------------------------------------------------------------
-        # 6. download_file overwrite=False (should skip)
+        # 5b. Download non-existent key (error path)
         # ------------------------------------------------------------------
-        print("\n--- download_file overwrite=False (skip) ---")
+        print("\n--- 5b. Download non-existent key (error) ---")
+
+        res = await s3.download_file(s3_root + "no_such_file_xyz.bin", str(LOCAL_DOWNLOAD_DIR / "ghost.bin"))
+        if not res.get("success"):
+            passed += 1
+            print(f"  [PASS] download_file non-existent key (expected failure)")
+        else:
+            failed += 1
+            print(f"  [FAIL] download_file non-existent key should have failed")
+
+        # ==================================================================
+        # 6. download_file overwrite=False (should skip)
+        # ==================================================================
+        print("\n--- 6. download_file overwrite=False (skip) ---")
 
         dl_skip_path = LOCAL_DOWNLOAD_DIR / "single" / "hello.txt"
         res = await s3.download_file(s3_root + "hello.txt", str(dl_skip_path), overwrite=False)
@@ -239,7 +318,7 @@ async def run_tests():
         # ------------------------------------------------------------------
         # 6b. download_file overwrite=True (should re-download)
         # ------------------------------------------------------------------
-        print("\n--- download_file overwrite=True ---")
+        print("\n--- 6b. download_file overwrite=True ---")
 
         res = await s3.download_file(s3_root + "hello.txt", str(dl_skip_path), overwrite=True)
         check(
@@ -248,10 +327,10 @@ async def run_tests():
             lambda r: r.get("skipped") is False,
         )
 
-        # ------------------------------------------------------------------
+        # ==================================================================
         # 7. put_bytes / get_text round-trip
-        # ------------------------------------------------------------------
-        print("\n--- put_bytes / get_text ---")
+        # ==================================================================
+        print("\n--- 7. put_bytes / get_text ---")
 
         test_text = "put_bytes round-trip test content"
         res = await s3.put_bytes(
@@ -264,10 +343,10 @@ async def run_tests():
         res = await s3.get_text(s3_root + "roundtrip.txt")
         check("get_text", res, lambda r: r.get("text") == test_text)
 
-        # ------------------------------------------------------------------
+        # ==================================================================
         # 8. put_text shortcut
-        # ------------------------------------------------------------------
-        print("\n--- put_text ---")
+        # ==================================================================
+        print("\n--- 8. put_text ---")
 
         res = await s3.put_text("shortcut test", s3_root + "shortcut.txt")
         check("put_text", res)
@@ -275,10 +354,10 @@ async def run_tests():
         res = await s3.get_text(s3_root + "shortcut.txt")
         check("get_text shortcut", res, lambda r: r.get("text") == "shortcut test")
 
-        # ------------------------------------------------------------------
+        # ==================================================================
         # 9. Upload folder
-        # ------------------------------------------------------------------
-        print("\n--- Upload folder ---")
+        # ==================================================================
+        print("\n--- 9. Upload folder ---")
 
         folder_s3_key = s3_root + "folder_upload/"
         res = await s3.upload_folder(
@@ -290,7 +369,7 @@ async def run_tests():
         # ------------------------------------------------------------------
         # 9b. Upload folder overwrite=False (should skip all)
         # ------------------------------------------------------------------
-        print("\n--- Upload folder overwrite=False (skip) ---")
+        print("\n--- 9b. Upload folder overwrite=False (skip) ---")
 
         res = await s3.upload_folder(
             s3_folder_key=folder_s3_key,
@@ -307,7 +386,7 @@ async def run_tests():
         # ------------------------------------------------------------------
         # 9c. Upload folder overwrite=True (should re-upload all)
         # ------------------------------------------------------------------
-        print("\n--- Upload folder overwrite=True ---")
+        print("\n--- 9c. Upload folder overwrite=True ---")
 
         res = await s3.upload_folder(
             s3_folder_key=folder_s3_key,
@@ -322,9 +401,43 @@ async def run_tests():
         )
 
         # ------------------------------------------------------------------
-        # 10. Download folder and verify
+        # 9d. Upload folder with verify=True
         # ------------------------------------------------------------------
-        print("\n--- Download folder ---")
+        print("\n--- 9d. Upload folder with verify ---")
+
+        res = await s3.upload_folder(
+            s3_folder_key=folder_s3_key,
+            local_folder_path=str(LOCAL_UPLOAD_DIR),
+            overwrite=True,
+            verify=True,
+        )
+        check(
+            "upload_folder with verify",
+            res,
+            lambda r: r.get("uploaded_successfully", 0) == len(test_files)
+                       and r.get("verification", {}).get("success") is True,
+        )
+
+        # ------------------------------------------------------------------
+        # 9e. Upload folder non-existent path (error)
+        # ------------------------------------------------------------------
+        print("\n--- 9e. Upload folder non-existent (error) ---")
+
+        res = await s3.upload_folder(
+            s3_folder_key=folder_s3_key,
+            local_folder_path="/tmp/does_not_exist_folder_xyz",
+        )
+        if not res.get("success"):
+            passed += 1
+            print(f"  [PASS] upload_folder non-existent path (expected failure)")
+        else:
+            failed += 1
+            print(f"  [FAIL] upload_folder non-existent path should have failed")
+
+        # ==================================================================
+        # 10. Download folder and verify
+        # ==================================================================
+        print("\n--- 10. Download folder ---")
 
         dl_folder = LOCAL_DOWNLOAD_DIR / "folder_download"
         res = await s3.download_folder(
@@ -354,7 +467,7 @@ async def run_tests():
         # ------------------------------------------------------------------
         # 10b. Download folder overwrite=False (should skip all)
         # ------------------------------------------------------------------
-        print("\n--- Download folder overwrite=False (skip) ---")
+        print("\n--- 10b. Download folder overwrite=False (skip) ---")
 
         res = await s3.download_folder(
             s3_folder_key=folder_s3_key,
@@ -371,7 +484,7 @@ async def run_tests():
         # ------------------------------------------------------------------
         # 10c. Download folder overwrite=True (should re-download all)
         # ------------------------------------------------------------------
-        print("\n--- Download folder overwrite=True ---")
+        print("\n--- 10c. Download folder overwrite=True ---")
 
         res = await s3.download_folder(
             s3_folder_key=folder_s3_key,
@@ -386,9 +499,27 @@ async def run_tests():
         )
 
         # ------------------------------------------------------------------
-        # 11. Verify folder sync
+        # 10d. Download folder with verify=True
         # ------------------------------------------------------------------
-        print("\n--- Verify folder sync ---")
+        print("\n--- 10d. Download folder with verify ---")
+
+        dl_verify_folder = LOCAL_DOWNLOAD_DIR / "folder_download_verify"
+        res = await s3.download_folder(
+            s3_folder_key=folder_s3_key,
+            local_folder_path=str(dl_verify_folder),
+            verify=True,
+        )
+        check(
+            "download_folder with verify",
+            res,
+            lambda r: r.get("downloaded_successfully", 0) == len(test_files)
+                       and r.get("verification", {}).get("success") is True,
+        )
+
+        # ==================================================================
+        # 11. Verify folder sync
+        # ==================================================================
+        print("\n--- 11. Verify folder sync ---")
 
         res = await s3.verify_folder_sync(
             s3_folder_key=folder_s3_key,
@@ -396,10 +527,10 @@ async def run_tests():
         )
         check("verify_folder_sync", res)
 
-        # ------------------------------------------------------------------
+        # ==================================================================
         # 12. sync_folder (sync_local=True: S3 -> local)
-        # ------------------------------------------------------------------
-        print("\n--- sync_folder (S3 -> local) ---")
+        # ==================================================================
+        print("\n--- 12. sync_folder (S3 -> local) ---")
 
         sync_local_dir = LOCAL_DOWNLOAD_DIR / "sync_local"
         sync_s3_key = s3_root + "sync_test/"
@@ -472,10 +603,10 @@ async def run_tests():
                        and not stale_file.exists(),
         )
 
-        # ------------------------------------------------------------------
+        # ==================================================================
         # 13. sync_folder (sync_local=False: local -> S3)
-        # ------------------------------------------------------------------
-        print("\n--- sync_folder (local -> S3) ---")
+        # ==================================================================
+        print("\n--- 13. sync_folder (local -> S3) ---")
 
         sync_remote_key = s3_root + "sync_upload_test/"
 
@@ -555,10 +686,10 @@ async def run_tests():
                     failed += 1
                     print(f"  [FAIL] sync_remote missing {rel_name}")
 
-        # ------------------------------------------------------------------
+        # ==================================================================
         # 14. Get presigned download link
-        # ------------------------------------------------------------------
-        print("\n--- Presigned download link ---")
+        # ==================================================================
+        print("\n--- 14. Presigned download link ---")
 
         res = await s3.get_download_link(s3_root + "hello.txt", expires_in=300)
         check("get_download_link", res, lambda r: r.get("url", "").startswith("http"))
@@ -566,9 +697,9 @@ async def run_tests():
             print(f"         URL: {res['url']}")
 
         # ------------------------------------------------------------------
-        # 13. Get presigned download link (as attachment)
+        # 14b. Presigned download link (as attachment)
         # ------------------------------------------------------------------
-        print("\n--- Presigned download link (as_attachment) ---")
+        print("\n--- 14b. Presigned download link (as_attachment) ---")
 
         res = await s3.get_download_link(
             s3_root + "hello.txt",
@@ -584,10 +715,10 @@ async def run_tests():
         if res.get("success"):
             print(f"         URL: {res['url']}")
 
-        # ------------------------------------------------------------------
-        # 14. Get folder download links
-        # ------------------------------------------------------------------
-        print("\n--- Folder download links ---")
+        # ==================================================================
+        # 15. Get folder download links
+        # ==================================================================
+        print("\n--- 15. Folder download links ---")
 
         res = await s3.get_folder_download_links(
             s3_folder_key=folder_s3_key,
@@ -605,9 +736,9 @@ async def run_tests():
                 print(f"         - {link['filename']}: {link['url']}")
 
         # ------------------------------------------------------------------
-        # 14b. Get folder download links (as_attachment)
+        # 15b. Folder download links (as_attachment)
         # ------------------------------------------------------------------
-        print("\n--- Folder download links (as_attachment) ---")
+        print("\n--- 15b. Folder download links (as_attachment) ---")
 
         res = await s3.get_folder_download_links(
             s3_folder_key=folder_s3_key,
@@ -621,9 +752,9 @@ async def run_tests():
         )
 
         # ------------------------------------------------------------------
-        # 14c. Get folder download links (empty prefix)
+        # 15c. Folder download links (empty prefix)
         # ------------------------------------------------------------------
-        print("\n--- Folder download links (empty folder) ---")
+        print("\n--- 15c. Folder download links (empty folder) ---")
 
         res = await s3.get_folder_download_links(
             s3_folder_key=s3_root + "nonexistent_folder/",
@@ -635,24 +766,78 @@ async def run_tests():
             lambda r: r.get("count", 0) == 0 and r.get("links") == [],
         )
 
-        # ------------------------------------------------------------------
-        # 15. Verify single file
-        # ------------------------------------------------------------------
-        print("\n--- Verify file ---")
+        # ==================================================================
+        # 16. Verify single file
+        # ==================================================================
+        print("\n--- 16. Verify file ---")
 
         local_hello = LOCAL_DOWNLOAD_DIR / "single" / "hello.txt"
         if local_hello.exists():
+            # 16a. verify with MD5
             res = await s3.verify_file(
                 local_file_path=str(local_hello),
                 s3_key=s3_root + "hello.txt",
                 use_md5=True,
             )
-            check("verify_file", res)
+            check("verify_file (use_md5)", res)
+
+            # 16b. verify with SHA256
+            res = await s3.verify_file(
+                local_file_path=str(local_hello),
+                s3_key=s3_root + "hello.txt",
+                use_sha256=True,
+            )
+            check("verify_file (use_sha256)", res)
+
+            # 16c. verify with both MD5 + SHA256
+            res = await s3.verify_file(
+                local_file_path=str(local_hello),
+                s3_key=s3_root + "hello.txt",
+                use_md5=True,
+                use_sha256=True,
+            )
+            check("verify_file (md5+sha256)", res)
 
         # ------------------------------------------------------------------
-        # 16. Delete test objects
+        # 16d. Verify file against non-existent remote key
         # ------------------------------------------------------------------
-        print("\n--- Cleanup: delete test objects ---")
+        print("\n--- 16d. Verify file non-existent remote (error) ---")
+
+        if local_hello.exists():
+            res = await s3.verify_file(
+                local_file_path=str(local_hello),
+                s3_key=s3_root + "no_such_file_xyz.bin",
+            )
+            if not res.get("success") and res.get("error_code") == "NoSuchKey":
+                passed += 1
+                print(f"  [PASS] verify_file non-existent remote (expected failure)")
+            elif not res.get("success"):
+                passed += 1
+                print(f"  [PASS] verify_file non-existent remote (failed as expected: {res.get('error_code')})")
+            else:
+                failed += 1
+                print(f"  [FAIL] verify_file non-existent remote should have failed")
+
+        # ------------------------------------------------------------------
+        # 16e. Verify file with non-existent local file
+        # ------------------------------------------------------------------
+        print("\n--- 16e. Verify file non-existent local (error) ---")
+
+        res = await s3.verify_file(
+            local_file_path="/tmp/does_not_exist_xyz.txt",
+            s3_key=s3_root + "hello.txt",
+        )
+        if not res.get("success") and res.get("error_code") == "FileNotFound":
+            passed += 1
+            print(f"  [PASS] verify_file non-existent local (expected failure)")
+        else:
+            failed += 1
+            print(f"  [FAIL] verify_file non-existent local should have failed with FileNotFound")
+
+        # ==================================================================
+        # 17. Delete test objects
+        # ==================================================================
+        print("\n--- 17. Cleanup: delete test objects ---")
 
         all_objs = await s3.list_objects(prefix=s3_root, max_keys=500)
         if all_objs.get("success"):
@@ -661,17 +846,17 @@ async def run_tests():
                 res = await s3.delete_object(key)
                 check(f"delete_object {key}", res)
 
-        # ------------------------------------------------------------------
-        # 17. Confirm deleted
-        # ------------------------------------------------------------------
-        print("\n--- Confirm cleanup ---")
+        # ==================================================================
+        # 18. Confirm deleted
+        # ==================================================================
+        print("\n--- 18. Confirm cleanup ---")
 
         res = await s3.list_objects(prefix=s3_root)
         check("list after cleanup", res, lambda r: r.get("count", -1) == 0)
 
-        # ------------------------------------------------------------------
+        # ==================================================================
         # Summary
-        # ------------------------------------------------------------------
+        # ==================================================================
         print("\n" + "=" * 60)
         total = passed + failed
         print(f"Results: {passed}/{total} passed, {failed} failed")
