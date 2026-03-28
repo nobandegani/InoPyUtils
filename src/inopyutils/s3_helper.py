@@ -447,60 +447,6 @@ class InoS3Helper:
             f"download_file(s3://{bucket}/{norm_key} -> {local_file_path})"
         )
 
-    async def download_file_object(
-            self,
-            s3_key: str,
-            local_file_path: str,
-            bucket_name: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Download a file using get_object for more control with automatic retry on failure
-
-        Args:
-            s3_key: S3 key (path) of the file to download
-            local_file_path: Local path where the file will be saved
-            bucket_name: S3 bucket name (uses default if not provided)
-
-        Returns:
-            Dict with "success", "msg", "s3_key", "bucket", "local_file", and optional "error_code"
-        """
-        err = self._validate_bucket(bucket_name)
-        if err:
-            return err
-        bucket = bucket_name or self.bucket_name
-        norm_key = self._normalize_key(s3_key)
-
-        async def _download_operation() -> Dict[str, Any]:
-            Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
-
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
-                response = await s3.get_object(Bucket=bucket, Key=norm_key)
-                stream = response["Body"]
-                async with aiofiles.open(local_file_path, "wb") as file:
-                    async for chunk in stream.iter_chunks():
-                        if chunk:
-                            await file.write(chunk)
-                # Explicit close if available
-                try:
-                    await stream.close()
-                except Exception:
-                    pass
-
-                success_msg = f"✅ Successfully downloaded s3://{bucket}/{norm_key} to {local_file_path}"
-                logging.info(success_msg)
-                return {
-                    "success": True,
-                    "msg": success_msg,
-                    "s3_key": norm_key,
-                    "bucket": bucket,
-                    "local_file": local_file_path
-                }
-
-        return await self._retry_operation(
-            _download_operation,
-            f"download_file_object(s3://{bucket}/{norm_key} -> {local_file_path})"
-        )
-
     async def list_objects(
             self,
             prefix: str = "",
