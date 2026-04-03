@@ -106,13 +106,25 @@ class InoRunpodHelper:
             raw_output = data.get("output", [])
             output = raw_output[0] if isinstance(raw_output, list) and raw_output else raw_output if isinstance(raw_output, dict) else {}
 
+            if not isinstance(output, dict) or not output:
+                return ino_err("runsync completed but returned no output",
+                               id=data.get("id"), status=status, output=raw_output)
+
             # OpenAI-compatible response format
             choices = output.get("choices", [])
             usage = output.get("usage")
 
+            if not choices:
+                return ino_err("runsync completed but returned no choices",
+                               id=data.get("id"), status=status, output=output)
+
             first_choice = choices[0] if choices else {}
             message = first_choice.get("message", {})
             content = message.get("content") or message.get("reasoning") or ""
+
+            if not content:
+                return ino_err("runsync completed but returned no content",
+                               id=data.get("id"), status=status, output=output)
 
             return ino_ok("runsync complete",
                           id=data.get("id"),
