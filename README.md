@@ -1,7 +1,7 @@
 # InoPyUtils
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
-[![Version](https://img.shields.io/badge/version-1.8.4-green)](https://pypi.org/project/inopyutils/)
+[![Version](https://img.shields.io/badge/version-1.8.5-green)](https://pypi.org/project/inopyutils/)
 [![License](https://img.shields.io/badge/license-MPL--2.0-orange)](LICENSE)
 [![Development Status](https://img.shields.io/badge/status-beta-yellow)](https://pypi.org/project/inopyutils/)
 
@@ -583,7 +583,7 @@ stamp = InoUtilHelper.get_date_time_utc_base64()
 
 ## Project Info
 
-- **Version**: 1.8.4
+- **Version**: 1.8.5
 - **Status**: Beta
 - **Python**: 3.9+
 - **License**: [Mozilla Public License 2.0](LICENSE)
