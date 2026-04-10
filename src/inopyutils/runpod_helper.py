@@ -27,7 +27,9 @@ class InoRunpodHelper:
         Re-submits the job up to max_failed_retries times when status is FAILED.
 
         Args:
-            url: RunPod runsync endpoint URL.
+            url: RunPod endpoint URL. Accepts either the base endpoint
+                (e.g. "https://api.runpod.ai/v2/<id>") or the full runsync URL
+                (e.g. "https://api.runpod.ai/v2/<id>/runsync").
             api_key: RunPod API key.
             model: Model name served by vLLM.
             user_prompt: The user message string.
@@ -41,6 +43,12 @@ class InoRunpodHelper:
             max_failed_retries: Max times to re-submit the entire job when status is FAILED (default 5).
         """
         try:
+            # Normalize URL: accept either base endpoint or full /runsync URL
+            base_url = url.rstrip("/")
+            if base_url.endswith("/runsync"):
+                base_url = base_url[: -len("/runsync")]
+            runsync_url = f"{base_url}/runsync"
+
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
@@ -83,7 +91,7 @@ class InoRunpodHelper:
                         await asyncio.sleep(poll_delay)
 
                     response = await http_client.post(
-                        url=url,
+                        url=runsync_url,
                         headers=headers,
                         json=payload,
                         json_response=True
@@ -105,7 +113,6 @@ class InoRunpodHelper:
                                        error_code=data.get("error"), status=status)
 
                     # Poll status endpoint instead of re-posting
-                    base_url = url.rsplit("/runsync", 1)[0]
                     status_url = f"{base_url}/status/{job_id}"
 
                     poll_statuses = {"IN_QUEUE", "IN_PROGRESS"}
@@ -115,7 +122,7 @@ class InoRunpodHelper:
                         status_resp = await http_client.get(
                             url=status_url,
                             headers=headers,
-                            json_response=True
+                            json=True
                         )
 
                         if ino_is_err(status_resp):
