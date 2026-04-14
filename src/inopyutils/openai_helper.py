@@ -21,7 +21,9 @@ class InoOpenAIHelper:
         """Send a chat completion request via the OpenAI-compatible API.
 
         Args:
-            api_key: API key (e.g. RUNPOD_API_KEY).
+            api_key: API key (e.g. RUNPOD_API_KEY). For Modal auth, pass
+                "wk-<key>:ws-<secret>" — it will be split into Modal-Key
+                and Modal-Secret headers automatically.
             base_url: Base URL for the API (e.g. RunPod endpoint + /openai/v1).
             model: Model name to use.
             user_prompt: The user message string.
@@ -45,7 +47,19 @@ class InoOpenAIHelper:
                 user_content = user_prompt
             messages.append({"role": "user", "content": user_content})
 
-            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            # Modal auth: "wk-<key>:ws-<secret>" → Modal-Key / Modal-Secret headers
+            if api_key.startswith("wk-") and ":" in api_key:
+                modal_key, modal_secret = api_key.split(":", 1)
+                client = AsyncOpenAI(
+                    api_key="modal",
+                    base_url=base_url,
+                    default_headers={
+                        "Modal-Key": modal_key,
+                        "Modal-Secret": modal_secret,
+                    },
+                )
+            else:
+                client = AsyncOpenAI(api_key=api_key, base_url=base_url)
             response = await client.chat.completions.create(
                 model=model,
                 messages=messages,
