@@ -21,10 +21,13 @@ class InoOpenAIHelper:
         """Send a chat completion request via the OpenAI-compatible API.
 
         Args:
-            api_key: API key (e.g. RUNPOD_API_KEY). For Modal auth, pass
+            api_key: API key for the target endpoint (OpenAI, a self-hosted
+                vLLM server, RunPod, Modal, etc.). For Modal auth, pass
                 "wk-<key>:ws-<secret>" — it will be split into Modal-Key
                 and Modal-Secret headers automatically.
-            base_url: Base URL for the API (e.g. RunPod endpoint + /openai/v1).
+            base_url: Base URL for the OpenAI-compatible API
+                (e.g. "https://api.openai.com/v1", "http://localhost:8000/v1"
+                for a local vLLM server, or a RunPod/Modal endpoint + "/v1").
             model: Model name to use.
             user_prompt: The user message string.
             system_prompt: Optional system message string.
