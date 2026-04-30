@@ -329,9 +329,10 @@ async def run_tests():
     # ------------------------------------------------------------------
     print("\n--- 11. Invalid base URL ---")
 
+    # .invalid TLD is reserved by RFC 6761 and guaranteed to fail DNS resolution
     res = await InoOpenAIHelper.chat_completions(
         api_key=API_KEY,
-        base_url=BASE_URL,
+        base_url="https://this-host-does-not-exist-inopyutils-test.invalid/v1",
         model=MODEL,
         user_prompt="Hello",
         max_tokens=8,
