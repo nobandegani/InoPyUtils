@@ -16,7 +16,10 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(pip index:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(curl -s \"https://api.github.com/repos/vllm-project/vllm/releases/tags/v0.11.0\")",
+      "Bash(curl -s \"https://api.github.com/repos/vllm-project/vllm/releases\")",
+      "Bash(curl -sL \"https://huggingface.co/DavidAU/Qwen3.6-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking/raw/main/README.md\")"
     ]
   }
 }
