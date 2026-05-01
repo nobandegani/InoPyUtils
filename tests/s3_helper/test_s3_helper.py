@@ -616,6 +616,34 @@ async def run_tests():
                        and not stale_file.exists(),
         )
 
+        # 12d. Stale local file with delete=False — sync should keep it
+        keeper_file = sync_local_dir / "keeper_extra.txt"
+        keeper_file.write_text("delete=False should keep me", encoding="utf-8")
+
+        res = await s3.sync_folder(
+            s3_key=sync_s3_key,
+            local_folder_path=str(sync_local_dir),
+            sync_local=True,
+            concurrency=3,
+            delete=False,
+        )
+        check(
+            "sync_folder S3->local (delete=False keeps stale)",
+            res,
+            lambda r: r.get("removed_local", -1) == 0
+                       and keeper_file.exists(),
+        )
+
+        # 12e. Confirm verified count matches remote total when delete=False
+        check(
+            "sync_folder S3->local (verified count)",
+            res,
+            lambda r: r.get("verified", 0) == len(test_files),
+        )
+
+        # Cleanup the keeper file so subsequent assertions aren't off
+        keeper_file.unlink(missing_ok=True)
+
         # ==================================================================
         # 13. sync_folder (sync_local=False: local -> S3)
         # ==================================================================
@@ -672,7 +700,72 @@ async def run_tests():
         extra_exists = await s3.object_exists(extra_s3_key)
         check("stale remote object deleted", extra_exists, lambda r: r.get("exists") is False)
 
-        # 13d. Verify uploaded content by downloading and comparing hashes
+        # 13d. Stale remote with delete=False — sync should keep it
+        keeper_remote_key = sync_remote_key + "remote_keeper.txt"
+        await s3.put_text("delete=False should keep me on S3", keeper_remote_key)
+
+        res = await s3.sync_folder(
+            s3_key=sync_remote_key,
+            local_folder_path=str(LOCAL_UPLOAD_DIR),
+            sync_local=False,
+            concurrency=3,
+            delete=False,
+        )
+        check(
+            "sync_folder local->S3 (delete=False keeps remote extras)",
+            res,
+            lambda r: r.get("removed_remote", -1) == 0,
+        )
+        keeper_still = await s3.object_exists(keeper_remote_key)
+        check(
+            "remote keeper still exists after delete=False",
+            keeper_still,
+            lambda r: r.get("exists") is True,
+        )
+
+        # 13d2. Confirm verified count matches local total
+        check(
+            "sync_folder local->S3 (verified count)",
+            res,
+            lambda r: r.get("verified", 0) == len(test_files),
+        )
+
+        # Now clean up the keeper so it doesn't pollute later assertions
+        await s3.delete_object(keeper_remote_key)
+
+        # 13e. Batched-delete stress: create 7 orphan remote objects, then
+        # sync with delete=True. Exercises the batched delete_objects path.
+        orphan_keys = [sync_remote_key + f"orphan_{i:02d}.txt" for i in range(7)]
+        for ok in orphan_keys:
+            await s3.put_text("orphan to be batch-deleted", ok)
+
+        res = await s3.sync_folder(
+            s3_key=sync_remote_key,
+            local_folder_path=str(LOCAL_UPLOAD_DIR),
+            sync_local=False,
+            concurrency=3,
+            delete=True,
+        )
+        check(
+            "sync_folder local->S3 (batched delete of 7 orphans)",
+            res,
+            lambda r: r.get("removed_remote", 0) == len(orphan_keys),
+        )
+        # Confirm none of the orphans survive
+        all_gone = True
+        for ok in orphan_keys:
+            chk = await s3.object_exists(ok)
+            if chk.get("exists") is not False:
+                all_gone = False
+                break
+        if all_gone:
+            passed += 1
+            print(f"  [PASS] all 7 orphans confirmed deleted")
+        else:
+            failed += 1
+            print(f"  [FAIL] some orphans still exist after batched delete")
+
+        # 13f. Verify uploaded content by downloading and comparing hashes
         sync_verify_dir = LOCAL_DOWNLOAD_DIR / "sync_upload_verify"
         res = await s3.download_folder(
             s3_folder_key=sync_remote_key,
@@ -830,9 +923,192 @@ async def run_tests():
         check_fail("verify_file non-existent local (should fail)", res, lambda r: r.get("error_code") == "FileNotFound")
 
         # ==================================================================
-        # 17. Delete test objects
+        # 17. Concurrent operations — exercise the shared client under load
         # ==================================================================
-        print("\n--- 17. Cleanup: delete test objects ---")
+        print("\n--- 17. Concurrent uploads (shared client) ---")
+
+        concurrent_root = s3_root + "concurrent/"
+
+        # Build 12 in-memory payloads and upload them concurrently
+        concurrent_keys = [concurrent_root + f"file_{i:02d}.txt" for i in range(12)]
+        concurrent_tasks = [
+            s3.put_text(f"concurrent payload #{i}", k)
+            for i, k in enumerate(concurrent_keys)
+        ]
+        results = await asyncio.gather(*concurrent_tasks, return_exceptions=True)
+
+        ok_count = sum(
+            1 for r in results
+            if isinstance(r, dict) and r.get("success", False)
+        )
+        if ok_count == len(concurrent_keys):
+            passed += 1
+            print(f"  [PASS] concurrent put_text x{len(concurrent_keys)}")
+        else:
+            failed += 1
+            print(f"  [FAIL] concurrent put_text: {ok_count}/{len(concurrent_keys)} ok")
+            for i, r in enumerate(results):
+                if isinstance(r, Exception):
+                    print(f"         file_{i:02d}: exception {type(r).__name__}: {r}")
+                elif isinstance(r, dict) and not r.get("success"):
+                    print(f"         file_{i:02d}: {r.get('msg')}")
+
+        # 17b. Concurrent reads — get_text on all of them in parallel
+        read_tasks = [s3.get_text(k) for k in concurrent_keys]
+        read_results = await asyncio.gather(*read_tasks, return_exceptions=True)
+        all_match = all(
+            isinstance(r, dict)
+            and r.get("success", False)
+            and r.get("text") == f"concurrent payload #{i}"
+            for i, r in enumerate(read_results)
+        )
+        if all_match:
+            passed += 1
+            print(f"  [PASS] concurrent get_text x{len(concurrent_keys)} (content matches)")
+        else:
+            failed += 1
+            print(f"  [FAIL] concurrent get_text: not all content matched")
+
+        # 17c. Concurrent object_exists
+        exist_tasks = [s3.object_exists(k) for k in concurrent_keys]
+        exist_results = await asyncio.gather(*exist_tasks, return_exceptions=True)
+        all_exist = all(
+            isinstance(r, dict)
+            and r.get("success", False)
+            and r.get("exists") is True
+            for r in exist_results
+        )
+        if all_exist:
+            passed += 1
+            print(f"  [PASS] concurrent object_exists x{len(concurrent_keys)}")
+        else:
+            failed += 1
+            print(f"  [FAIL] concurrent object_exists: not all reported exists=True")
+
+        # ==================================================================
+        # 18. Edge cases: empty file, unicode filename, deeply nested key
+        # ==================================================================
+        print("\n--- 18. Edge cases ---")
+
+        # 18a. Empty file (0 bytes)
+        empty_local = LOCAL_UPLOAD_DIR / "empty.bin"
+        empty_local.write_bytes(b"")
+        empty_key = s3_root + "edge/empty.bin"
+
+        res = await s3.upload_file(str(empty_local), empty_key)
+        check("upload_file empty (0 bytes)", res)
+
+        empty_dl = LOCAL_DOWNLOAD_DIR / "edge" / "empty.bin"
+        empty_dl.parent.mkdir(parents=True, exist_ok=True)
+        res = await s3.download_file(empty_key, str(empty_dl), overwrite=True)
+        check("download_file empty (0 bytes)", res)
+
+        if empty_dl.exists():
+            check_bool_size = empty_dl.stat().st_size == 0
+            if check_bool_size:
+                passed += 1
+                print(f"  [PASS] empty file size=0 round-trip")
+            else:
+                failed += 1
+                print(f"  [FAIL] empty file size mismatch: got {empty_dl.stat().st_size}")
+
+        # 18b. verify_file on empty file (size match + sha256)
+        res = await s3.verify_file(
+            local_file_path=str(empty_local),
+            s3_key=empty_key,
+            use_md5=True,
+        )
+        check("verify_file empty", res)
+
+        # 18c. Unicode filename
+        unicode_local = LOCAL_UPLOAD_DIR / "测试文件.txt"
+        unicode_local.write_text("unicode content: café 测试 🎉", encoding="utf-8")
+        unicode_key = s3_root + "edge/测试文件.txt"
+
+        res = await s3.upload_file(str(unicode_local), unicode_key)
+        check("upload_file unicode filename", res)
+
+        res = await s3.object_exists(unicode_key)
+        check("object_exists unicode", res, lambda r: r.get("exists") is True)
+
+        unicode_dl = LOCAL_DOWNLOAD_DIR / "edge" / "测试文件.txt"
+        res = await s3.download_file(unicode_key, str(unicode_dl), overwrite=True)
+        check("download_file unicode filename", res)
+
+        if unicode_dl.exists():
+            content = unicode_dl.read_text(encoding="utf-8")
+            if content == "unicode content: café 测试 🎉":
+                passed += 1
+                print(f"  [PASS] unicode content round-trip")
+            else:
+                failed += 1
+                print(f"  [FAIL] unicode content mismatch: {content!r}")
+
+        # 18d. Presigned link for unicode filename (Content-Disposition encoding)
+        res = await s3.get_download_link(
+            unicode_key,
+            expires_in=300,
+            as_attachment=True,
+        )
+        check(
+            "get_download_link unicode (as_attachment)",
+            res,
+            lambda r: r.get("url", "").startswith("http"),
+        )
+
+        # 18e. Deeply nested key
+        deep_local = test_files["hello.txt"]
+        deep_key = s3_root + "edge/a/b/c/d/e/f/g/deep.txt"
+
+        res = await s3.upload_file(str(deep_local), deep_key)
+        check("upload_file deeply nested key", res)
+
+        deep_dl = LOCAL_DOWNLOAD_DIR / "edge" / "a" / "b" / "c" / "d" / "e" / "f" / "g" / "deep.txt"
+        res = await s3.download_file(deep_key, str(deep_dl), overwrite=True)
+        check(
+            "download_file deeply nested (parents created)",
+            res,
+            lambda r: deep_dl.exists(),
+        )
+
+        # ==================================================================
+        # 19. extra_args_provider callback in upload_folder
+        # ==================================================================
+        print("\n--- 19. upload_folder extra_args_provider ---")
+
+        provider_root = s3_root + "provider_test/"
+        # Wipe any previous run
+        prev = await s3.list_objects(prefix=provider_root, max_keys=1000)
+        if prev.get("success"):
+            for o in prev.get("objects", []):
+                await s3.delete_object(o["Key"])
+
+        seen_relative_paths: list = []
+
+        def _extra_args_provider(rel_path: str) -> dict:
+            seen_relative_paths.append(rel_path)
+            # S3 user metadata only allows ASCII; URL-encode anything else.
+            from urllib.parse import quote as _q
+            safe_path = _q(rel_path.replace("\\", "/"), safe="/")
+            return {"Metadata": {"src-rel-path": safe_path}}
+
+        res = await s3.upload_folder(
+            s3_folder_key=provider_root,
+            local_folder_path=str(LOCAL_UPLOAD_DIR),
+            extra_args_provider=_extra_args_provider,
+            overwrite=True,
+        )
+        check(
+            "upload_folder with extra_args_provider",
+            res,
+            lambda r: r.get("uploaded_successfully", 0) >= len(test_files)
+                       and len(seen_relative_paths) >= len(test_files),
+        )
+
+        # ==================================================================
+        # 20. Delete test objects
+        # ==================================================================
+        print("\n--- 20. Cleanup: delete test objects ---")
 
         all_objs = await s3.list_objects(prefix=s3_root, max_keys=500)
         if all_objs.get("success"):
@@ -842,9 +1118,9 @@ async def run_tests():
                 check(f"delete_object {key}", res)
 
         # ==================================================================
-        # 18. Confirm deleted
+        # 21. Confirm deleted
         # ==================================================================
-        print("\n--- 18. Confirm cleanup ---")
+        print("\n--- 21. Confirm cleanup ---")
 
         res = await s3.list_objects(prefix=s3_root)
         check("list after cleanup", res, lambda r: r.get("count", -1) == 0)
