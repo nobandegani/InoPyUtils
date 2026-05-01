@@ -490,11 +490,14 @@ class InoS3Helper:
             s3_key: S3 key (path) of the file to download
             local_file_path: Local path where the file will be saved
             bucket_name: S3 bucket name (uses default if not provided)
-            overwrite: If False (default), skip download when local file exists and matches S3 (size check).
-                       If True, always download regardless.
+            overwrite: If False (default), skip the download when the local
+                file already matches S3, using auto-cascade verification
+                (sha256 → md5 → size). If True, always download regardless.
 
         Returns:
-            Dict with "success", "msg", "s3_key", "bucket", "local_file", and optional "error_code", "skipped"
+            Dict with "success", "msg", "s3_key", "bucket", "local_file",
+            "skipped", and (when skipped) "verify_method"; plus optional
+            "error_code" on failure.
         """
         err = self._validate_bucket(bucket_name)
         if err:
@@ -561,7 +564,7 @@ class InoS3Helper:
         if err:
             return err | {"objects": [], "count": 0}
         bucket = bucket_name or self.bucket_name
-        norm_prefix = self._normalize_key(prefix) or ""
+        norm_prefix = self._normalize_key(prefix)
 
         # Input validation
         if max_keys <= 0:
@@ -731,9 +734,12 @@ class InoS3Helper:
             local_folder_path: Local directory path where the folder will be saved
             bucket_name: S3 bucket name (uses default if not provided)
             max_concurrent: Maximum number of concurrent downloads (default: 5)
-            verify: If True, verify folder sync after download
-            overwrite: If False (default), skip files that already exist locally and match S3 (size check).
-                       If True, always download regardless.
+            verify: If True, verify folder sync after download (skipped if
+                the download had failures)
+            overwrite: If False (default), per file, skip the download when
+                the local file already matches S3, using auto-cascade
+                verification (sha256 → md5 → size). If True, always
+                download regardless.
 
         Returns:
             Dict[str, Any]: Status information with success/failure/skipped counts and details
@@ -1002,7 +1008,7 @@ class InoS3Helper:
             }
 
         bucket = bucket_name or self.bucket_name
-        prefix = self._normalize_key(s3_key) or ""
+        prefix = self._normalize_key(s3_key)
         if prefix and not prefix.endswith("/"):
             prefix += "/"
 
@@ -1592,8 +1598,10 @@ class InoS3Helper:
             max_concurrent: Maximum number of concurrent uploads (default: 5)
             verify: If True, verify folder sync after upload (skipped if upload had failures)
             extra_args_provider: Optional callable that returns ExtraArgs dict for each file (receives relative path)
-            overwrite: If False (default), skip files that already exist on S3 and match locally (size check).
-                       If True, always upload regardless.
+            overwrite: If False (default), per file, skip the upload when
+                the remote object already matches the local file, using
+                auto-cascade verification (sha256 → md5 → size). If True,
+                always upload regardless.
             follow_symlinks: If False (default), skip symlinks during the local
                 folder walk to avoid uploading files outside the target tree
                 or looping on symlink cycles. Set True only if you trust the
@@ -1821,7 +1829,7 @@ class InoS3Helper:
         if err:
             return {**err, "exists": False}
         bucket = bucket_name or self.bucket_name
-        norm_key = self._normalize_key(s3_key) or ""
+        norm_key = self._normalize_key(s3_key)
 
         async def _exists_operation() -> Dict[str, Any]:
             try:
@@ -1978,7 +1986,12 @@ class InoS3Helper:
         if not objects:
             bucket = bucket_name or self.bucket_name
             norm_key = self._normalize_key(s3_folder_key)
-            return ino_ok(f"No files found under s3://{bucket}/{norm_key}", links=[], count=0)
+            return ino_ok(
+                f"No files found under s3://{bucket}/{norm_key}",
+                links=[],
+                count=0,
+                failed_count=0,
+            )
 
         bucket = bucket_name or self.bucket_name
         norm_folder_key = self._normalize_key(s3_folder_key)
@@ -2053,7 +2066,8 @@ class InoS3Helper:
             s3_folder_key: str,
             local_folder_path: str,
             bucket_name: Optional[str] = None,
-            fail_fast: bool = False
+            fail_fast: bool = False,
+            follow_symlinks: bool = False,
     ) -> Dict[str, Any]:
         """
         Verify that the files in a local folder and the files in an S3 folder (prefix) are in sync.
@@ -2066,6 +2080,12 @@ class InoS3Helper:
             s3_folder_key: S3 key (path) prefix (should end with "/")
             local_folder_path: Local directory path
             bucket_name: S3 bucket name (uses default if not provided)
+            fail_fast: If True, return as soon as any mismatch is found
+                (skips full size comparison). Default False does a complete
+                comparison.
+            follow_symlinks: If False (default), skip symlinks during the
+                local folder walk to avoid cycles or counting files outside
+                the target tree.
 
         Returns:
             Dict with success flag, counts, missing lists, mismatches, and a human-readable summary
@@ -2085,13 +2105,21 @@ class InoS3Helper:
             return ino_err(f"❌ Local folder for verification is invalid: {local_folder_path}", error_code="InvalidLocalFolder")
 
         try:
-            # Build local files map: relative_path (with forward slashes) -> size
+            # Build local files map: relative_path (with forward slashes) -> size.
+            # Skip symlinks by default for consistency with sync_folder /
+            # upload_folder / download_folder.
             local_map: Dict[str, int] = {}
             for file_path in local_folder.rglob("*"):
-                if file_path.is_file():
+                if not follow_symlinks and file_path.is_symlink():
+                    continue
+                if not file_path.is_file():
+                    continue
+                try:
                     rel = file_path.relative_to(local_folder)
-                    rel_norm = str(rel).replace("\\", "/")
-                    local_map[rel_norm] = file_path.stat().st_size
+                except ValueError:
+                    continue
+                rel_norm = str(rel).replace("\\", "/")
+                local_map[rel_norm] = file_path.stat().st_size
 
             # Build remote files map by listing all objects under prefix
             remote_map: Dict[str, int] = {}
