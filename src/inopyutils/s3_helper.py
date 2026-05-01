@@ -284,12 +284,19 @@ class InoS3Helper:
         last_result: Dict[str, Any] = ino_err("no attempts run", error_code="NoAttempts")
         last_exc: Optional[Exception] = None
 
+        # Programming errors that should NOT be retried (almost certainly bugs,
+        # not transient failures).
+        non_retryable_excs = (TypeError, KeyError, AttributeError, NotImplementedError, ValueError)
+
         for attempt in range(n):
             try:
                 result = await op()
                 last_result = result
                 if result.get("success", False):
                     return result
+            except non_retryable_excs as e:
+                # Programming bug — fail fast, don't waste retries
+                return ino_err(f"non-retryable error: {e}", error_code=type(e).__name__)
             except Exception as e:
                 last_exc = e
                 last_result = ino_err(f"attempt failed: {e}", error_code=type(e).__name__)
@@ -337,7 +344,10 @@ class InoS3Helper:
                         return result
                 # If operation returns unsuccessful result without retryable flag, don't retry
                 return result
-            except (FileNotFoundError, NoCredentialsError, ValueError) as e:
+            except (FileNotFoundError, NoCredentialsError, ValueError,
+                    TypeError, KeyError, AttributeError, NotImplementedError) as e:
+                # Includes programming bugs (TypeError/KeyError/AttributeError) —
+                # retrying these wastes time and hides the real cause.
                 error_msg = f"❌ {operation_name} failed with non-retryable error: {str(e)}"
                 logger.error(error_msg)
                 return ino_err(error_msg, error_code=type(e).__name__)
@@ -1515,7 +1525,14 @@ class InoS3Helper:
                         if extra_args_provider:
                             try:
                                 provider_args = extra_args_provider(file_info["relative_path"]) or {}
-                            except Exception:
+                            except Exception as cb_exc:
+                                # Don't fail the upload because the user's
+                                # callback raised, but make it visible.
+                                logger.warning(
+                                    f"extra_args_provider raised for "
+                                    f"{file_info['relative_path']}: "
+                                    f"{type(cb_exc).__name__}: {cb_exc}"
+                                )
                                 provider_args = {}
                         extra_args: Dict[str, Any] = dict(provider_args)
                         if "ContentType" not in extra_args and guess:
@@ -1832,11 +1849,23 @@ class InoS3Helper:
             else:
                 errors.append({"s3_key": r.get("s3_key", "unknown"), "msg": r.get("msg", "unknown error")})
 
-        result = ino_ok(f"Generated {len(links)} download links for s3://{bucket}/{norm_folder_key}", links=links, count=len(links))
         if errors:
-            result["msg"] += f" ({len(errors)} failed)"
-            result["errors"] = errors
-        return result
+            # Partial failure — surface as success=False so callers don't miss it
+            return ino_err(
+                f"Generated {len(links)} download links for s3://{bucket}/{norm_folder_key} "
+                f"({len(errors)} failed)",
+                error_code="PartialFailure",
+                links=links,
+                count=len(links),
+                failed_count=len(errors),
+                errors=errors,
+            )
+        return ino_ok(
+            f"Generated {len(links)} download links for s3://{bucket}/{norm_folder_key}",
+            links=links,
+            count=len(links),
+            failed_count=0,
+        )
 
     async def verify_folder_sync(
             self,
