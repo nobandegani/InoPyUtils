@@ -418,9 +418,12 @@ class InoS3Helper:
         bucket = bucket_name or self.bucket_name
         norm_key = self._normalize_key(s3_key)
 
-        # Check if local file exists
-        if not Path(local_file_path).exists():
+        # Check if local file exists and is actually a file (not a directory)
+        local_p = Path(local_file_path)
+        if not local_p.exists():
             return ino_err(f"❌ Local file not found: {local_file_path}", error_code="FileNotFound")
+        if not local_p.is_file():
+            return ino_err(f"❌ Local path is not a file: {local_file_path}", error_code="NotAFile")
 
         async def _upload_operation() -> Dict[str, Any]:
             async with self._client_ctx() as s3:
@@ -471,7 +474,7 @@ class InoS3Helper:
         bucket = bucket_name or self.bucket_name
         norm_key = self._normalize_key(s3_key)
 
-        if not overwrite and Path(local_file_path).exists():
+        if not overwrite and Path(local_file_path).is_file():
             verification = await self.verify_file(
                 local_file_path=local_file_path,
                 s3_key=norm_key,
@@ -486,7 +489,7 @@ class InoS3Helper:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
 
             async with self._client_ctx() as s3:
-                await s3.download_file(bucket, norm_key, local_file_path)
+                await s3.download_file(bucket, norm_key, local_file_path, Config=self.transfer_config)
                 success_msg = f"✅ Successfully downloaded s3://{bucket}/{norm_key} to {local_file_path}"
                 logger.info(success_msg)
                 return ino_ok(success_msg, s3_key=norm_key, bucket=bucket, local_file=local_file_path, skipped=False)
@@ -753,6 +756,10 @@ class InoS3Helper:
                 # Download files concurrently with semaphore to limit concurrent operations
                 semaphore = asyncio.Semaphore(max_concurrent)
                 
+                # Pre-resolve the local folder so we can verify each
+                # destination stays inside it (path-traversal protection).
+                local_folder_resolved = local_folder.resolve()
+
                 async def _download_single_file_with_semaphore(obj: Dict[str, Any]) -> Dict[str, Any]:
                     """Download a single file with semaphore + per-file retry."""
                     async with semaphore:
@@ -760,9 +767,27 @@ class InoS3Helper:
                         relative_path = s3_key[len(s3_folder_key):]
                         local_file_path = local_folder / relative_path
 
+                        # Path-traversal guard: refuse to write outside the
+                        # target folder. S3 keys CAN contain "../" segments;
+                        # without this check, a malicious key like
+                        # "../../etc/passwd" would let a remote actor write
+                        # anywhere the process has write access.
+                        try:
+                            resolved = local_file_path.resolve()
+                            resolved.relative_to(local_folder_resolved)
+                        except (ValueError, OSError):
+                            return {
+                                "s3_key": s3_key,
+                                "relative_path": relative_path,
+                                "result": ino_err(
+                                    f"Refused: S3 key would write outside target folder: {s3_key}",
+                                    error_code="PathTraversalRefused",
+                                ),
+                            }
+
                         # Skip if file exists and matches S3 (unless overwrite=True).
                         # Done outside retry so a verified-match doesn't burn retries.
-                        if not overwrite and local_file_path.exists():
+                        if not overwrite and local_file_path.is_file():
                             verification = await self.verify_file(
                                 local_file_path=str(local_file_path),
                                 s3_key=s3_key,
@@ -777,7 +802,10 @@ class InoS3Helper:
 
                         async def _do_download() -> Dict[str, Any]:
                             local_file_path.parent.mkdir(parents=True, exist_ok=True)
-                            await s3.download_file(bucket, s3_key, str(local_file_path))
+                            await s3.download_file(
+                                bucket, s3_key, str(local_file_path),
+                                Config=self.transfer_config
+                            )
                             return ino_ok(f"Downloaded {relative_path}", skipped=False)
 
                         outcome = await self._retry_file_op(_do_download)
@@ -835,8 +863,9 @@ class InoS3Helper:
             result["error_code"] = type(e).__name__
             result["errors"].append(error_msg)
 
-        # Optional post-download verification
-        if verify:
+        # Optional post-download verification — skip if the download already
+        # failed; verifying a known-broken state just wastes API calls.
+        if verify and result.get("success", False):
             try:
                 verification = await self.verify_folder_sync(
                     s3_folder_key=s3_folder_key,
@@ -854,6 +883,12 @@ class InoS3Helper:
                 ver_msg = f"⚠️ Verification step failed: {str(ve)}"
                 logger.warning(ver_msg)
                 result["verification"] = ino_err(ver_msg, error_code=type(ve).__name__)
+        elif verify:
+            # Surface that we deliberately skipped verification
+            result["verification"] = ino_err(
+                "Skipped verification because the operation reported failures",
+                error_code="VerificationSkipped",
+            )
 
         return result
 
@@ -1424,7 +1459,8 @@ class InoS3Helper:
             max_concurrent: int = 5,
             verify: bool = False,
             extra_args_provider: Optional[Callable[[str], Dict[str, Any]]] = None,
-            overwrite: bool = False
+            overwrite: bool = False,
+            follow_symlinks: bool = False,
     ) -> Dict[str, Any]:
         """
         Upload an entire folder to S3, preserving directory structure
@@ -1435,10 +1471,14 @@ class InoS3Helper:
             local_folder_path: Local directory path to upload
             bucket_name: S3 bucket name (uses default if not provided)
             max_concurrent: Maximum number of concurrent uploads (default: 5)
-            verify: If True, verify folder sync after upload
+            verify: If True, verify folder sync after upload (skipped if upload had failures)
             extra_args_provider: Optional callable that returns ExtraArgs dict for each file (receives relative path)
             overwrite: If False (default), skip files that already exist on S3 and match locally (size check).
                        If True, always upload regardless.
+            follow_symlinks: If False (default), skip symlinks during the local
+                folder walk to avoid uploading files outside the target tree
+                or looping on symlink cycles. Set True only if you trust the
+                tree contents.
 
         Returns:
             Dict[str, Any]: Status information with success/failure/skipped counts and details
@@ -1474,19 +1514,29 @@ class InoS3Helper:
         }
 
         try:
-            # Find all files in the local folder recursively
+            # Find all files in the local folder recursively. By default
+            # we skip symlinks to avoid uploading files outside the target
+            # tree or looping on symlink cycles.
             all_files = []
             for file_path in local_folder.rglob("*"):
-                if file_path.is_file():
-                    # Get relative path from the base folder
+                if not follow_symlinks and file_path.is_symlink():
+                    continue
+                if not file_path.is_file():
+                    continue
+                # Get relative path from the base folder
+                try:
                     relative_path = file_path.relative_to(local_folder)
-                    # Convert Windows paths to forward slashes for S3
-                    s3_key = s3_folder_key + str(relative_path).replace("\\", "/")
-                    all_files.append({
-                        "local_path": str(file_path),
-                        "s3_key": s3_key,
-                        "relative_path": str(relative_path)
-                    })
+                except ValueError:
+                    # File resolves outside local_folder (via symlinks etc.) — skip
+                    logger.warning(f"Skipping file outside upload root: {file_path}")
+                    continue
+                # Convert Windows paths to forward slashes for S3
+                s3_key = s3_folder_key + str(relative_path).replace("\\", "/")
+                all_files.append({
+                    "local_path": str(file_path),
+                    "s3_key": s3_key,
+                    "relative_path": str(relative_path)
+                })
 
             result["total_files"] = len(all_files)
             
@@ -1599,8 +1649,9 @@ class InoS3Helper:
             result["error_code"] = type(e).__name__
             result["errors"].append(error_msg)
 
-        # Optional post-upload verification
-        if verify:
+        # Optional post-upload verification — skip if the upload already
+        # failed; verifying a known-broken state just wastes API calls.
+        if verify and result.get("success", False):
             try:
                 verification = await self.verify_folder_sync(
                     s3_folder_key=s3_folder_key,
@@ -1618,6 +1669,11 @@ class InoS3Helper:
                 ver_msg = f"⚠️ Verification step failed: {str(ve)}"
                 logger.warning(ver_msg)
                 result["verification"] = ino_err(ver_msg, error_code=type(ve).__name__)
+        elif verify:
+            result["verification"] = ino_err(
+                "Skipped verification because the operation reported failures",
+                error_code="VerificationSkipped",
+            )
 
         return result
 
