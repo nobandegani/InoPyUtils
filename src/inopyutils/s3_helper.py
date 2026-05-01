@@ -398,19 +398,25 @@ class InoS3Helper:
             local_file_path: str,
             s3_key: str,
             bucket_name: Optional[str] = None,
-            extra_args: Optional[Dict[str, Any]] = None
+            extra_args: Optional[Dict[str, Any]] = None,
+            overwrite: bool = True,
     ) -> Dict[str, Any]:
         """
-        Upload a file to S3 with automatic retry on failure
+        Upload a file to S3 with automatic retry on failure.
 
         Args:
             local_file_path: Path to the local file to upload
             s3_key: S3 key (path) where the file will be stored
             bucket_name: S3 bucket name (uses default if not provided)
             extra_args: Extra arguments for the upload (e.g., metadata, ACL)
+            overwrite: If True (default), always upload. If False, first check
+                whether the remote object already matches the local file using
+                an auto-cascade (sha256 → md5 → size); skip the upload if it
+                does. The result will include `skipped=True` and `verify_method`.
 
         Returns:
-            Dict with "success", "msg", "s3_key", "bucket", and optional "error_code"
+            Dict with "success", "msg", "s3_key", "bucket", "skipped", and
+            optional "error_code", "verify_method"
         """
         err = self._validate_bucket(bucket_name)
         if err:
@@ -424,6 +430,28 @@ class InoS3Helper:
             return ino_err(f"❌ Local file not found: {local_file_path}", error_code="FileNotFound")
         if not local_p.is_file():
             return ino_err(f"❌ Local path is not a file: {local_file_path}", error_code="NotAFile")
+
+        # Skip if remote already matches (auto-cascade: sha256 → md5 → size)
+        if not overwrite:
+            verification = await self.verify_file(
+                local_file_path=local_file_path,
+                s3_key=norm_key,
+                bucket_name=bucket,
+                use_md5=True,
+                use_sha256=True,
+            )
+            if verification.get("success", False):
+                method = verification.get("verify_method", "size")
+                skip_msg = f"⏭️ Skipped upload, S3 already matches local via {method}: {local_file_path}"
+                logger.info(skip_msg)
+                return ino_ok(
+                    skip_msg,
+                    s3_key=norm_key,
+                    bucket=bucket,
+                    local_file=local_file_path,
+                    skipped=True,
+                    verify_method=method,
+                )
 
         async def _upload_operation() -> Dict[str, Any]:
             async with self._client_ctx() as s3:
@@ -441,7 +469,7 @@ class InoS3Helper:
                 )
                 success_msg = f"✅ Successfully uploaded {Path(local_file_path).name} to s3://{bucket}/{norm_key}"
                 logger.info(success_msg)
-                return ino_ok(success_msg, s3_key=norm_key, bucket=bucket, local_file=local_file_path)
+                return ino_ok(success_msg, s3_key=norm_key, bucket=bucket, local_file=local_file_path, skipped=False)
 
         return await self._retry_operation(
             _upload_operation,
@@ -475,15 +503,26 @@ class InoS3Helper:
         norm_key = self._normalize_key(s3_key)
 
         if not overwrite and Path(local_file_path).is_file():
+            # Auto-cascade: try sha256 → md5 → size, whichever the remote supports
             verification = await self.verify_file(
                 local_file_path=local_file_path,
                 s3_key=norm_key,
-                bucket_name=bucket
+                bucket_name=bucket,
+                use_md5=True,
+                use_sha256=True,
             )
             if verification.get("success", False):
-                skip_msg = f"⏭️ Skipped download, local file matches S3: {local_file_path}"
+                method = verification.get("verify_method", "size")
+                skip_msg = f"⏭️ Skipped download, local file matches S3 via {method}: {local_file_path}"
                 logger.info(skip_msg)
-                return ino_ok(skip_msg, s3_key=norm_key, bucket=bucket, local_file=local_file_path, skipped=True)
+                return ino_ok(
+                    skip_msg,
+                    s3_key=norm_key,
+                    bucket=bucket,
+                    local_file=local_file_path,
+                    skipped=True,
+                    verify_method=method,
+                )
 
         async def _download_operation() -> Dict[str, Any]:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
@@ -786,18 +825,25 @@ class InoS3Helper:
                             }
 
                         # Skip if file exists and matches S3 (unless overwrite=True).
-                        # Done outside retry so a verified-match doesn't burn retries.
+                        # Auto-cascade: sha256 → md5 → size.
                         if not overwrite and local_file_path.is_file():
                             verification = await self.verify_file(
                                 local_file_path=str(local_file_path),
                                 s3_key=s3_key,
-                                bucket_name=bucket
+                                bucket_name=bucket,
+                                use_md5=True,
+                                use_sha256=True,
                             )
                             if verification.get("success", False):
+                                method = verification.get("verify_method", "size")
                                 return {
                                     "s3_key": s3_key,
                                     "relative_path": relative_path,
-                                    "result": ino_ok(f"Skipped {relative_path} (already matches)", skipped=True)
+                                    "result": ino_ok(
+                                        f"Skipped {relative_path} (matches via {method})",
+                                        skipped=True,
+                                        verify_method=method,
+                                    ),
                                 }
 
                         async def _do_download() -> Dict[str, Any]:
@@ -1555,18 +1601,24 @@ class InoS3Helper:
                     """Upload a single file with semaphore + per-file retry."""
                     async with semaphore:
                         # Skip if file already exists on S3 and matches locally
-                        # (unless overwrite=True). Done outside retry so a
-                        # verified-match doesn't burn retries.
+                        # (unless overwrite=True). Auto-cascade: sha256 → md5 → size.
                         if not overwrite:
                             verification = await self.verify_file(
                                 local_file_path=file_info["local_path"],
                                 s3_key=file_info["s3_key"],
-                                bucket_name=bucket
+                                bucket_name=bucket,
+                                use_md5=True,
+                                use_sha256=True,
                             )
                             if verification.get("success", False):
+                                method = verification.get("verify_method", "size")
                                 return {
                                     "file_info": file_info,
-                                    "result": ino_ok(f"Skipped {file_info['relative_path']} (already matches)", skipped=True)
+                                    "result": ino_ok(
+                                        f"Skipped {file_info['relative_path']} (matches via {method})",
+                                        skipped=True,
+                                        verify_method=method,
+                                    ),
                                 }
 
                         # Infer content type
@@ -2126,7 +2178,16 @@ class InoS3Helper:
     ) -> Dict[str, Any]:
         """
         Verify a single local file against a cloud (S3) object.
-        Checks existence and size. Optionally verifies MD5 when ETag is a single-part MD5.
+        Checks existence and size. Optionally verifies MD5 when ETag is a single-part MD5,
+        and/or SHA-256 when the remote has a ChecksumSHA256.
+
+        Cascade behavior: when both use_md5 and use_sha256 are True, the strongest
+        method that's actually available on the remote object is used. The result's
+        `verify_method` field reports which method was the determining check:
+            "sha256" — remote had ChecksumSHA256 and we compared it
+            "md5"    — single-part ETag, we compared MD5
+            "size"   — neither hash was available; size-only check
+            None     — remote object not found
 
         Args:
             local_file_path: Path to the local file
@@ -2138,7 +2199,7 @@ class InoS3Helper:
         Returns:
             Dict with fields: success, msg, bucket, s3_key, local_file, exists_remote,
             local_size, remote_size, sizes_match, etag, md5_checked, md5_match,
-            sha256_checked, sha256_match, and error_code on failure
+            sha256_checked, sha256_match, verify_method, and error_code on failure
         """
         err = self._validate_bucket(bucket_name)
         if err:
@@ -2183,13 +2244,18 @@ class InoS3Helper:
 
                     success = sizes_match and (md5_match is not False) and (sha256_match is not False)
 
+                    # The strongest method actually exercised — what the
+                    # caller can rely on as the determining check.
+                    if sha256_checked:
+                        verify_method = "sha256"
+                    elif md5_checked:
+                        verify_method = "md5"
+                    else:
+                        verify_method = "size"
+
                     msg: str
                     if success:
-                        parts = ["✅ File verified (size matched)"]
-                        if md5_checked and md5_match:
-                            parts.append("(MD5 matched)")
-                        if sha256_checked and sha256_match:
-                            parts.append("(SHA256 matched)")
+                        parts = [f"✅ File verified via {verify_method}"]
                         msg = " ".join(parts) + f": {local_file_path} <-> s3://{bucket}/{s3_key}"
                     else:
                         reasons = []
@@ -2216,7 +2282,8 @@ class InoS3Helper:
                         md5_checked=md5_checked,
                         md5_match=md5_match,
                         sha256_checked=sha256_checked,
-                        sha256_match=sha256_match
+                        sha256_match=sha256_match,
+                        verify_method=verify_method,
                     )
                     if success:
                         return ino_ok(msg, **extra_kwargs)
@@ -2231,7 +2298,8 @@ class InoS3Helper:
                         bucket=bucket,
                         s3_key=s3_key,
                         local_file=str(local_path),
-                        exists_remote=False
+                        exists_remote=False,
+                        verify_method=None,
                     )
                 raise
 

@@ -329,8 +329,11 @@ async def run_tests():
         check(
             "download_file skip (overwrite=False)",
             res,
-            lambda r: r.get("skipped") is True,
+            lambda r: r.get("skipped") is True
+                       and r.get("verify_method") in ("sha256", "md5", "size"),
         )
+        if res.get("success"):
+            print(f"         verify_method: {res.get('verify_method')}")
 
         # ------------------------------------------------------------------
         # 6b. download_file overwrite=True (should re-download)
@@ -399,6 +402,21 @@ async def run_tests():
             lambda r: r.get("skipped_files", 0) == len(test_files)
                        and r.get("uploaded_successfully", -1) == 0,
         )
+        # Sanity-check that at least one skip result actually carried verify_method.
+        # (We can't easily inspect individual file results from upload_folder's
+        # aggregate dict, so we re-derive via verify_file on one of the files.)
+        verify_check = await s3.verify_file(
+            local_file_path=str(test_files["hello.txt"]),
+            s3_key=folder_s3_key + "hello.txt",
+            use_md5=True,
+            use_sha256=True,
+        )
+        check(
+            "upload_folder skip carries verify_method (probe)",
+            verify_check,
+            lambda r: r.get("verify_method") in ("sha256", "md5", "size"),
+        )
+        print(f"         verify_method (probe): {verify_check.get('verify_method')}")
 
         # ------------------------------------------------------------------
         # 9c. Upload folder overwrite=True (should re-upload all)
@@ -492,6 +510,19 @@ async def run_tests():
             lambda r: r.get("skipped_files", 0) == len(test_files)
                        and r.get("downloaded_successfully", -1) == 0,
         )
+        # Probe verify_method via verify_file on one of the just-skipped files
+        verify_probe = await s3.verify_file(
+            local_file_path=str(dl_folder / "hello.txt"),
+            s3_key=folder_s3_key + "hello.txt",
+            use_md5=True,
+            use_sha256=True,
+        )
+        check(
+            "download_folder skip carries verify_method (probe)",
+            verify_probe,
+            lambda r: r.get("verify_method") in ("sha256", "md5", "size"),
+        )
+        print(f"         verify_method (probe): {verify_probe.get('verify_method')}")
 
         # ------------------------------------------------------------------
         # 10c. Download folder overwrite=True (should re-download all)
@@ -1106,9 +1137,91 @@ async def run_tests():
         )
 
         # ==================================================================
-        # 20. Delete test objects
+        # 20. upload_file with overwrite=False (skip-if-matches with cascade)
         # ==================================================================
-        print("\n--- 20. Cleanup: delete test objects ---")
+        print("\n--- 20. upload_file overwrite=False (skip if matches) ---")
+
+        skip_root = s3_root + "upload_skip/"
+        # Wipe any leftovers
+        prev = await s3.list_objects(prefix=skip_root, max_keys=1000)
+        if prev.get("success"):
+            for o in prev.get("objects", []):
+                await s3.delete_object(o["Key"])
+
+        skip_local = LOCAL_UPLOAD_DIR / "skip_test.txt"
+        skip_local.write_text("upload_file skip-if-matches test", encoding="utf-8")
+        skip_key = skip_root + "skip_test.txt"
+
+        # 20a. First upload — should actually upload (not skipped)
+        res = await s3.upload_file(str(skip_local), skip_key, overwrite=False)
+        check(
+            "upload_file initial (overwrite=False, no remote)",
+            res,
+            lambda r: r.get("skipped") is False,
+        )
+
+        # 20b. Re-upload identical file with overwrite=False — should skip
+        res = await s3.upload_file(str(skip_local), skip_key, overwrite=False)
+        check(
+            "upload_file skip when remote matches (overwrite=False)",
+            res,
+            lambda r: r.get("skipped") is True
+                       and r.get("verify_method") in ("sha256", "md5", "size"),
+        )
+        if res.get("success"):
+            print(f"         verify_method: {res.get('verify_method')}")
+
+        # 20c. Modify content, re-upload with overwrite=False — should NOT skip
+        skip_local.write_text("upload_file skip-if-matches test (CHANGED)", encoding="utf-8")
+        res = await s3.upload_file(str(skip_local), skip_key, overwrite=False)
+        check(
+            "upload_file does NOT skip when content differs",
+            res,
+            lambda r: r.get("skipped") is False,
+        )
+
+        # 20d. Re-upload with overwrite=True (default) — never skips
+        res = await s3.upload_file(str(skip_local), skip_key)
+        check(
+            "upload_file overwrite=True default (always uploads)",
+            res,
+            lambda r: r.get("skipped") is False,
+        )
+
+        # 20e. Verify cascade picks "md5" for small single-part Backblaze upload
+        verify_res = await s3.verify_file(
+            local_file_path=str(skip_local),
+            s3_key=skip_key,
+            use_md5=True,
+            use_sha256=True,
+        )
+        check(
+            "verify_file returns verify_method field",
+            verify_res,
+            lambda r: r.get("verify_method") in ("sha256", "md5", "size"),
+        )
+        print(f"         small file cascade picked: {verify_res.get('verify_method')}")
+
+        # 20f. verify_method should be None when remote doesn't exist
+        verify_missing = await s3.verify_file(
+            local_file_path=str(skip_local),
+            s3_key=skip_root + "definitely_not_there.txt",
+        )
+        check_fail(
+            "verify_file fails when remote missing",
+            verify_missing,
+        )
+        if verify_missing.get("verify_method") is None:
+            passed += 1
+            print("  [PASS] verify_method is None when remote missing")
+        else:
+            failed += 1
+            print(f"  [FAIL] verify_method should be None when remote missing, got {verify_missing.get('verify_method')!r}")
+
+        # ==================================================================
+        # 21. Delete test objects
+        # ==================================================================
+        print("\n--- 21. Cleanup: delete test objects ---")
 
         all_objs = await s3.list_objects(prefix=s3_root, max_keys=500)
         if all_objs.get("success"):
@@ -1118,9 +1231,9 @@ async def run_tests():
                 check(f"delete_object {key}", res)
 
         # ==================================================================
-        # 21. Confirm deleted
+        # 22. Confirm deleted
         # ==================================================================
-        print("\n--- 21. Confirm cleanup ---")
+        print("\n--- 22. Confirm cleanup ---")
 
         res = await s3.list_objects(prefix=s3_root)
         check("list after cleanup", res, lambda r: r.get("count", -1) == 0)
