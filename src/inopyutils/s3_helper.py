@@ -13,6 +13,22 @@ import mimetypes
 from urllib.parse import quote
 
 
+class _SharedClientCtx:
+    """Async context manager that yields a shared aioboto3 S3 client.
+
+    Lifecycle is owned by the parent InoS3Helper.close(); __aexit__ is a no-op.
+    """
+
+    def __init__(self, helper: "InoS3Helper") -> None:
+        self._helper = helper
+
+    async def __aenter__(self):
+        return await self._helper._get_client()
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
 class InoS3Helper:
     """
     Async S3 client class that wraps aioboto3 functionality
@@ -42,6 +58,11 @@ class InoS3Helper:
         self.retries = retries
         self.config: Optional[Config] = None
         self.session = None
+
+        # Shared client, lazily created on first use and torn down by close().
+        self._client = None
+        self._client_cm = None
+        self._client_lock = asyncio.Lock()
 
         self.transfer_config: Optional[TransferConfig] = None
         # Always call init to set up session, config, and transfer_config
@@ -119,7 +140,15 @@ class InoS3Helper:
             self.session = Session(region_name=region_name)
 
     async def close(self) -> None:
-        """Clean up resources. Safe to call multiple times."""
+        """Tear down the shared aioboto3 client. Safe to call multiple times."""
+        if self._client_cm is not None:
+            try:
+                await self._client_cm.__aexit__(None, None, None)
+            except Exception as e:
+                logging.debug(f"Error closing S3 client: {e}")
+            finally:
+                self._client_cm = None
+                self._client = None
         self.session = None
 
     async def __aenter__(self) -> "InoS3Helper":
@@ -135,6 +164,33 @@ class InoS3Helper:
                 "InoS3Helper is not initialized. Pass credentials to the constructor or call init() first."
             )
         return self.session
+
+    async def _get_client(self):
+        """Return a shared aioboto3 S3 client, lazily creating it on first use.
+
+        The client is reused across all method calls to avoid TCP+TLS handshake
+        churn. It's torn down by close() / __aexit__.
+        """
+        if self._client is not None:
+            return self._client
+        async with self._client_lock:
+            if self._client is not None:
+                return self._client
+            session = self._require_session()
+            cm = session.client("s3", endpoint_url=self.endpoint_url, config=self.config)
+            client = await cm.__aenter__()
+            self._client_cm = cm
+            self._client = client
+            return self._client
+
+    def _client_ctx(self) -> "_SharedClientCtx":
+        """Return an async context manager that yields the shared S3 client.
+
+        Used as a drop-in replacement for `session.client(...)` in methods —
+        entering the context returns the cached client, exiting is a no-op.
+        Actual teardown happens in close().
+        """
+        return _SharedClientCtx(self)
 
     def _validate_bucket(self, bucket_name: Optional[str]) -> Optional[Dict[str, Any]]:
         """
@@ -161,6 +217,46 @@ class InoS3Helper:
         while "//" in k:
             k = k.replace("//", "/")
         return k
+
+    async def _retry_file_op(
+            self,
+            op: Callable[[], Awaitable[Dict[str, Any]]],
+            attempts: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Lightweight per-file retry for batch folder operations.
+
+        Unlike `_retry_operation` (which classifies errors and is meant for
+        single ops), this just reruns `op()` on any exception or unsuccessful
+        result, with exponential backoff and jitter. Used inside
+        `download_folder` / `upload_folder` so that a transient failure on one
+        file in 1000 doesn't permanently fail that file.
+
+        Returns the final result dict (last attempt wins).
+        """
+        n = max(1, attempts if attempts is not None else (self.retries + 1))
+        last_result: Dict[str, Any] = ino_err("no attempts run", error_code="NoAttempts")
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(n):
+            try:
+                result = await op()
+                last_result = result
+                if result.get("success", False):
+                    return result
+            except Exception as e:
+                last_exc = e
+                last_result = ino_err(f"attempt failed: {e}", error_code=type(e).__name__)
+
+            if attempt < n - 1:
+                wait_time = min(30.0, (2 ** attempt) + random.uniform(0, 1))
+                await asyncio.sleep(wait_time)
+
+        if last_exc is not None and not last_result.get("msg"):
+            last_result = ino_err(
+                f"failed after {n} attempts: {last_exc}",
+                error_code=type(last_exc).__name__,
+            )
+        return last_result
 
     async def _retry_operation(
             self,
@@ -275,7 +371,7 @@ class InoS3Helper:
             return ino_err(f"❌ Local file not found: {local_file_path}", error_code="FileNotFound")
 
         async def _upload_operation() -> Dict[str, Any]:
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 local_extra_args = dict(extra_args or {})
                 if "ContentType" not in local_extra_args:
                     guess, _ = mimetypes.guess_type(local_file_path)
@@ -337,7 +433,7 @@ class InoS3Helper:
         async def _download_operation() -> Dict[str, Any]:
             Path(local_file_path).parent.mkdir(parents=True, exist_ok=True)
 
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 await s3.download_file(bucket, norm_key, local_file_path)
                 success_msg = f"✅ Successfully downloaded s3://{bucket}/{norm_key} to {local_file_path}"
                 logging.info(success_msg)
@@ -378,7 +474,7 @@ class InoS3Helper:
             return ino_err("❌ max_keys must be greater than 0", error_code="InvalidParameter", objects=[], count=0)
 
         async def _list_operation() -> Dict[str, Any]:
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 all_objects = []
                 common_prefixes_accum = []
                 token = None
@@ -455,7 +551,7 @@ class InoS3Helper:
             prefix += "/"
 
         async def _count_op() -> Dict[str, Any]:
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 total = 0
                 token: Optional[str] = None
                 while True:
@@ -513,7 +609,7 @@ class InoS3Helper:
         norm_key = self._normalize_key(s3_key)
 
         async def _delete_operation() -> Dict[str, Any]:
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 await s3.delete_object(Bucket=bucket, Key=norm_key)
                 success_msg = f"✅ Successfully deleted s3://{bucket}/{norm_key}"
                 logging.info(success_msg)
@@ -575,7 +671,7 @@ class InoS3Helper:
             all_objects = []
             continuation_token = None
             
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 while True:
                     list_params = {
                         "Bucket": bucket,
@@ -606,42 +702,38 @@ class InoS3Helper:
                 semaphore = asyncio.Semaphore(max_concurrent)
                 
                 async def _download_single_file_with_semaphore(obj: Dict[str, Any]) -> Dict[str, Any]:
-                    """Download a single file with semaphore control"""
+                    """Download a single file with semaphore + per-file retry."""
                     async with semaphore:
                         s3_key = obj["Key"]
                         relative_path = s3_key[len(s3_folder_key):]
                         local_file_path = local_folder / relative_path
 
-                        try:
-                            # Skip if file exists and matches S3 (unless overwrite=True)
-                            if not overwrite and local_file_path.exists():
-                                verification = await self.verify_file(
-                                    local_file_path=str(local_file_path),
-                                    s3_key=s3_key,
-                                    bucket_name=bucket
-                                )
-                                if verification.get("success", False):
-                                    return {
-                                        "s3_key": s3_key,
-                                        "relative_path": relative_path,
-                                        "result": ino_ok(f"Skipped {relative_path} (already matches)", skipped=True)
-                                    }
+                        # Skip if file exists and matches S3 (unless overwrite=True).
+                        # Done outside retry so a verified-match doesn't burn retries.
+                        if not overwrite and local_file_path.exists():
+                            verification = await self.verify_file(
+                                local_file_path=str(local_file_path),
+                                s3_key=s3_key,
+                                bucket_name=bucket
+                            )
+                            if verification.get("success", False):
+                                return {
+                                    "s3_key": s3_key,
+                                    "relative_path": relative_path,
+                                    "result": ino_ok(f"Skipped {relative_path} (already matches)", skipped=True)
+                                }
 
-                            # Ensure parent directories exist for nested files
+                        async def _do_download() -> Dict[str, Any]:
                             local_file_path.parent.mkdir(parents=True, exist_ok=True)
-                            # Use the shared client to download
                             await s3.download_file(bucket, s3_key, str(local_file_path))
-                            return {
-                                "s3_key": s3_key,
-                                "relative_path": relative_path,
-                                "result": ino_ok(f"Downloaded {relative_path}", skipped=False)
-                            }
-                        except Exception as e:
-                            return {
-                                "s3_key": s3_key,
-                                "relative_path": relative_path,
-                                "result": ino_err(f"Exception during download: {str(e)}", error_code=type(e).__name__)
-                            }
+                            return ino_ok(f"Downloaded {relative_path}", skipped=False)
+
+                        outcome = await self._retry_file_op(_do_download)
+                        return {
+                            "s3_key": s3_key,
+                            "relative_path": relative_path,
+                            "result": outcome,
+                        }
 
                 # Execute all downloads concurrently
                 download_tasks = [_download_single_file_with_semaphore(obj) for obj in file_objects]
@@ -719,7 +811,8 @@ class InoS3Helper:
             local_folder_path: str,
             sync_local: bool = True,
             concurrency: int = 5,
-            bucket_name: Optional[str] = None
+            bucket_name: Optional[str] = None,
+            delete: bool = True,
     ) -> Dict[str, Any]:
         """
         Robustly synchronize files between an S3 prefix and a local folder.
@@ -728,13 +821,14 @@ class InoS3Helper:
         - List all remote files under the provided prefix
         - Download missing/changed local files
         - Verify downloaded/kept files using hash when possible (SHA256/MD5 via verify_file)
-        - Remove local files that are not present remotely under that prefix
+        - If delete=True, remove local files that are not present remotely
 
         Behavior when sync_local=False (local -> S3):
         - Scan all local files under the provided folder
         - Upload missing/changed files to S3
         - Verify uploaded files using hash when possible (SHA256/MD5 via verify_file)
-        - Remove remote objects that are not present locally
+        - If delete=True, remove remote objects that are not present locally
+          (uses batched delete_objects for efficiency)
 
         Args:
             s3_key: S3 key prefix to sync from/to
@@ -742,6 +836,8 @@ class InoS3Helper:
             sync_local: If True, sync S3 to local. If False, sync local to S3
             concurrency: Maximum concurrent file sync operations
             bucket_name: S3 bucket name (uses default if not provided)
+            delete: If True (default), remove orphans on the destination side
+                (rsync-style). Set to False to leave extra files in place.
 
         Returns:
             Dict[str, Any]: Sync status and detailed counters
@@ -793,11 +889,11 @@ class InoS3Helper:
 
         if sync_local:
             return await self._sync_remote_to_local(
-                bucket, prefix, local_folder, result, concurrency
+                bucket, prefix, local_folder, result, concurrency, delete
             )
         else:
             return await self._sync_local_to_remote(
-                bucket, prefix, local_folder, result, concurrency
+                bucket, prefix, local_folder, result, concurrency, delete
             )
 
     async def _sync_remote_to_local(
@@ -806,7 +902,8 @@ class InoS3Helper:
             prefix: str,
             local_folder: Path,
             result: Dict[str, Any],
-            concurrency: int
+            concurrency: int,
+            delete_orphans: bool = True,
     ) -> Dict[str, Any]:
         """Internal: sync S3 prefix -> local folder (used when sync_local=True)."""
         max_concurrent = max(1, int(concurrency))
@@ -823,7 +920,7 @@ class InoS3Helper:
             remote_objects: Dict[str, Dict[str, Any]] = {}
             continuation_token = None
 
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 while True:
                     params: Dict[str, Any] = {
                         "Bucket": bucket,
@@ -859,26 +956,27 @@ class InoS3Helper:
                 remote_rel_set = set(remote_objects.keys())
                 local_rel_set = set(local_files.keys())
 
-                # Remove files not present in remote
-                to_remove = sorted(local_rel_set - remote_rel_set)
-                for rel in to_remove:
-                    try:
-                        local_files[rel].unlink(missing_ok=True)
-                        result["removed_local"] += 1
-                    except Exception as e:
-                        result["failed"] += 1
-                        msg = f"Failed to remove stale local file {local_files[rel]}: {str(e)}"
-                        result["errors"].append(msg)
-                        logging.error(msg)
+                # Remove files not present in remote (only when delete_orphans=True)
+                if delete_orphans:
+                    to_remove = sorted(local_rel_set - remote_rel_set)
+                    for rel in to_remove:
+                        try:
+                            local_files[rel].unlink(missing_ok=True)
+                            result["removed_local"] += 1
+                        except Exception as e:
+                            result["failed"] += 1
+                            msg = f"Failed to remove stale local file {local_files[rel]}: {str(e)}"
+                            result["errors"].append(msg)
+                            logging.error(msg)
 
-                # Cleanup empty directories bottom-up
-                dirs = sorted([p for p in local_folder.rglob("*") if p.is_dir()], key=lambda p: len(p.parts), reverse=True)
-                for d in dirs:
-                    try:
-                        if not any(d.iterdir()):
-                            d.rmdir()
-                    except Exception:
-                        pass
+                    # Cleanup empty directories bottom-up
+                    dirs = sorted([p for p in local_folder.rglob("*") if p.is_dir()], key=lambda p: len(p.parts), reverse=True)
+                    for d in dirs:
+                        try:
+                            if not any(d.iterdir()):
+                                d.rmdir()
+                        except Exception:
+                            pass
 
                 semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -1038,7 +1136,8 @@ class InoS3Helper:
             prefix: str,
             local_folder: Path,
             result: Dict[str, Any],
-            concurrency: int
+            concurrency: int,
+            delete_orphans: bool = True,
     ) -> Dict[str, Any]:
         """Internal: sync local folder -> S3 prefix (used when sync_local=False)."""
         max_concurrent = max(1, int(concurrency))
@@ -1059,7 +1158,7 @@ class InoS3Helper:
             remote_objects: Dict[str, Dict[str, Any]] = {}
             continuation_token = None
 
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 while True:
                     params: Dict[str, Any] = {
                         "Bucket": bucket,
@@ -1087,18 +1186,42 @@ class InoS3Helper:
                 remote_rel_set = set(remote_objects.keys())
                 local_rel_set = set(local_files.keys())
 
-                # Remove remote objects not present locally
-                to_remove = sorted(remote_rel_set - local_rel_set)
-                for rel in to_remove:
-                    remote_key = remote_objects[rel].get("Key", "")
-                    try:
-                        await s3.delete_object(Bucket=bucket, Key=remote_key)
-                        result["removed_remote"] += 1
-                    except Exception as e:
-                        result["failed"] += 1
-                        msg = f"Failed to remove remote object s3://{bucket}/{remote_key}: {str(e)}"
-                        result["errors"].append(msg)
-                        logging.error(msg)
+                # Remove remote objects not present locally — batched up to
+                # 1000 keys per delete_objects call (S3 hard limit).
+                if delete_orphans:
+                    to_remove = sorted(remote_rel_set - local_rel_set)
+                    for batch_start in range(0, len(to_remove), 1000):
+                        batch = to_remove[batch_start:batch_start + 1000]
+                        objects = [
+                            {"Key": remote_objects[rel].get("Key", "")}
+                            for rel in batch
+                            if remote_objects[rel].get("Key")
+                        ]
+                        if not objects:
+                            continue
+                        try:
+                            resp = await s3.delete_objects(
+                                Bucket=bucket,
+                                Delete={"Objects": objects, "Quiet": True},
+                            )
+                            # delete_objects with Quiet=True only returns errors
+                            errs = resp.get("Errors") or []
+                            result["removed_remote"] += len(objects) - len(errs)
+                            for err_obj in errs:
+                                result["failed"] += 1
+                                msg = (
+                                    f"Failed to remove remote object "
+                                    f"s3://{bucket}/{err_obj.get('Key', '?')}: "
+                                    f"{err_obj.get('Code', '?')} {err_obj.get('Message', '')}"
+                                )
+                                result["errors"].append(msg)
+                                logging.error(msg)
+                        except Exception as e:
+                            # Whole batch failed — count all as failures
+                            result["failed"] += len(objects)
+                            msg = f"Batch delete failed ({len(objects)} keys): {str(e)}"
+                            result["errors"].append(msg)
+                            logging.error(msg)
 
                 semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -1341,36 +1464,38 @@ class InoS3Helper:
             # Upload files concurrently with semaphore to limit concurrent operations
             semaphore = asyncio.Semaphore(max_concurrent)
 
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 async def _upload_single_file_with_semaphore(file_info: Dict[str, str]) -> Dict[str, Any]:
-                    """Upload a single file with semaphore control using shared client"""
+                    """Upload a single file with semaphore + per-file retry."""
                     async with semaphore:
-                        try:
-                            # Skip if file already exists on S3 and matches locally (unless overwrite=True)
-                            if not overwrite:
-                                verification = await self.verify_file(
-                                    local_file_path=file_info["local_path"],
-                                    s3_key=file_info["s3_key"],
-                                    bucket_name=bucket
-                                )
-                                if verification.get("success", False):
-                                    return {
-                                        "file_info": file_info,
-                                        "result": ino_ok(f"Skipped {file_info['relative_path']} (already matches)", skipped=True)
-                                    }
+                        # Skip if file already exists on S3 and matches locally
+                        # (unless overwrite=True). Done outside retry so a
+                        # verified-match doesn't burn retries.
+                        if not overwrite:
+                            verification = await self.verify_file(
+                                local_file_path=file_info["local_path"],
+                                s3_key=file_info["s3_key"],
+                                bucket_name=bucket
+                            )
+                            if verification.get("success", False):
+                                return {
+                                    "file_info": file_info,
+                                    "result": ino_ok(f"Skipped {file_info['relative_path']} (already matches)", skipped=True)
+                                }
 
-                            # Infer content type
-                            guess, _ = mimetypes.guess_type(file_info["local_path"])
-                            # Start with provider-supplied args (if any) so they can override guesses
-                            provider_args: Dict[str, Any] = {}
-                            if extra_args_provider:
-                                try:
-                                    provider_args = extra_args_provider(file_info["relative_path"]) or {}
-                                except Exception:
-                                    provider_args = {}
-                            extra_args: Dict[str, Any] = dict(provider_args)
-                            if "ContentType" not in extra_args and guess:
-                                extra_args["ContentType"] = guess
+                        # Infer content type
+                        guess, _ = mimetypes.guess_type(file_info["local_path"])
+                        provider_args: Dict[str, Any] = {}
+                        if extra_args_provider:
+                            try:
+                                provider_args = extra_args_provider(file_info["relative_path"]) or {}
+                            except Exception:
+                                provider_args = {}
+                        extra_args: Dict[str, Any] = dict(provider_args)
+                        if "ContentType" not in extra_args and guess:
+                            extra_args["ContentType"] = guess
+
+                        async def _do_upload() -> Dict[str, Any]:
                             await s3.upload_file(
                                 file_info["local_path"],
                                 bucket,
@@ -1378,15 +1503,10 @@ class InoS3Helper:
                                 ExtraArgs=extra_args,
                                 Config=self.transfer_config
                             )
-                            return {
-                                "file_info": file_info,
-                                "result": ino_ok(f"Uploaded {file_info['relative_path']}", skipped=False)
-                            }
-                        except Exception as e:
-                            return {
-                                "file_info": file_info,
-                                "result": ino_err(f"Exception during upload: {str(e)}", error_code=type(e).__name__)
-                            }
+                            return ino_ok(f"Uploaded {file_info['relative_path']}", skipped=False)
+
+                        outcome = await self._retry_file_op(_do_upload)
+                        return {"file_info": file_info, "result": outcome}
 
                 # Execute all uploads concurrently
                 upload_tasks = [_upload_single_file_with_semaphore(file_info) for file_info in all_files]
@@ -1481,7 +1601,7 @@ class InoS3Helper:
 
         async def _exists_operation() -> Dict[str, Any]:
             try:
-                async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+                async with self._client_ctx() as s3:
                     await s3.head_object(Bucket=bucket, Key=norm_key)
                     return ino_ok(f"✅ Object s3://{bucket}/{norm_key} exists", exists=True, s3_key=norm_key, bucket=bucket)
             except ClientError as e:
@@ -1531,7 +1651,7 @@ class InoS3Helper:
         norm_key = self._normalize_key(s3_key)
 
         async def _op() -> Dict[str, Any]:
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 # Ensure object exists and get basic metadata
                 head = await s3.head_object(Bucket=bucket, Key=norm_key)
                 content_length = int(head.get("ContentLength", 0))
@@ -1640,6 +1760,10 @@ class InoS3Helper:
         norm_folder_key = self._normalize_key(s3_folder_key)
         semaphore = asyncio.Semaphore(concurrency)
 
+        # Hoist the client outside the per-file fn so we don't open a new one
+        # per object. The shared client is reused across the whole batch.
+        s3 = await self._get_client()
+
         async def _generate_link(obj: Dict[str, Any]) -> Dict[str, Any]:
             """Generate a presigned URL for a single object using list metadata."""
             async with semaphore:
@@ -1659,12 +1783,9 @@ class InoS3Helper:
                     params["ResponseContentType"] = chosen_content_type
 
                 try:
-                    async with self._require_session().client(
-                        "s3", endpoint_url=self.endpoint_url, config=self.config
-                    ) as s3:
-                        url = await s3.generate_presigned_url(
-                            "get_object", Params=params, ExpiresIn=expires_in
-                        )
+                    url = await s3.generate_presigned_url(
+                        "get_object", Params=params, ExpiresIn=expires_in
+                    )
                     return ino_ok(url=url, s3_key=obj_key, filename=use_filename, content_type=chosen_content_type, content_length=obj.get("Size", 0))
                 except Exception as e:
                     return ino_err(str(e), s3_key=obj_key)
@@ -1739,7 +1860,7 @@ class InoS3Helper:
             # Build remote files map by listing all objects under prefix
             remote_map: Dict[str, int] = {}
             continuation_token = None
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 while True:
                     params: Dict[str, Any] = {
                         "Bucket": bucket,
@@ -1847,7 +1968,7 @@ class InoS3Helper:
         bucket = bucket_name or self.bucket_name
         norm_key = self._normalize_key(s3_key)
         async def _op() -> Dict[str, Any]:
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 params: Dict[str, Any] = {
                     "Bucket": bucket,
                     "Key": norm_key,
@@ -1871,7 +1992,7 @@ class InoS3Helper:
         bucket = bucket_name or self.bucket_name
         norm_key = self._normalize_key(s3_key)
         async def _op() -> Dict[str, Any]:
-            async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+            async with self._client_ctx() as s3:
                 resp = await s3.get_object(Bucket=bucket, Key=norm_key)
                 stream = resp["Body"]
                 try:
@@ -1931,7 +2052,7 @@ class InoS3Helper:
 
         async def _verify_operation() -> Dict[str, Any]:
             try:
-                async with self._require_session().client("s3", endpoint_url=self.endpoint_url, config=self.config) as s3:
+                async with self._client_ctx() as s3:
                     # Retrieve remote object's metadata
                     head = await s3.head_object(Bucket=bucket, Key=self._normalize_key(s3_key))
                     remote_size = int(head.get("ContentLength", 0))
