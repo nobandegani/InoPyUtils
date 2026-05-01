@@ -796,6 +796,19 @@ async def run_tests():
             failed += 1
             print(f"  [FAIL] some orphans still exist after batched delete")
 
+        # 13g. Empty prefix safety guard — refuses without allow_full_bucket
+        empty_prefix_res = await s3.sync_folder(
+            s3_key="",
+            local_folder_path=str(LOCAL_UPLOAD_DIR),
+            sync_local=False,
+        )
+        check_fail(
+            "sync_folder refuses empty prefix without allow_full_bucket",
+            empty_prefix_res,
+            lambda r: r.get("error_code") == "EmptyPrefixRefused",
+        )
+        print(f"         msg: {empty_prefix_res.get('msg')}")
+
         # 13f. Verify uploaded content by downloading and comparing hashes
         sync_verify_dir = LOCAL_DOWNLOAD_DIR / "sync_upload_verify"
         res = await s3.download_folder(

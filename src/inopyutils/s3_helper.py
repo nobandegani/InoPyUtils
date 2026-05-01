@@ -946,6 +946,8 @@ class InoS3Helper:
             concurrency: int = 5,
             bucket_name: Optional[str] = None,
             delete: bool = True,
+            allow_full_bucket: bool = False,
+            follow_symlinks: bool = False,
     ) -> Dict[str, Any]:
         """
         Robustly synchronize files between an S3 prefix and a local folder.
@@ -971,6 +973,13 @@ class InoS3Helper:
             bucket_name: S3 bucket name (uses default if not provided)
             delete: If True (default), remove orphans on the destination side
                 (rsync-style). Set to False to leave extra files in place.
+            allow_full_bucket: If False (default), refuses an empty s3_key
+                because it would treat the entire bucket as the sync scope —
+                combined with delete=True that could wipe everything. Set
+                True only if you intentionally want to sync the whole bucket.
+            follow_symlinks: If False (default), skip symlinks during the
+                local folder walk to avoid cycles or operating on files
+                outside the target tree.
 
         Returns:
             Dict[str, Any]: Sync status and detailed counters
@@ -997,6 +1006,28 @@ class InoS3Helper:
         if prefix and not prefix.endswith("/"):
             prefix += "/"
 
+        # Refuse empty prefix unless explicitly allowed. Otherwise an empty
+        # s3_key combined with delete=True can wipe the entire bucket.
+        if not prefix and not allow_full_bucket:
+            return ino_err(
+                "Empty s3_key would treat the entire bucket as the sync scope. "
+                "Pass a non-empty prefix, or set allow_full_bucket=True if "
+                "that's truly what you want.",
+                error_code="EmptyPrefixRefused",
+                bucket=bucket,
+                total_remote_files=0,
+                total_local_files=0,
+                downloaded=0,
+                uploaded=0,
+                updated=0,
+                skipped_unchanged=0,
+                verified=0,
+                removed_local=0,
+                removed_remote=0,
+                failed=0,
+                errors=[],
+            )
+
         local_folder = Path(local_folder_path)
         local_folder.mkdir(parents=True, exist_ok=True)
 
@@ -1022,11 +1053,11 @@ class InoS3Helper:
 
         if sync_local:
             return await self._sync_remote_to_local(
-                bucket, prefix, local_folder, result, concurrency, delete
+                bucket, prefix, local_folder, result, concurrency, delete, follow_symlinks
             )
         else:
             return await self._sync_local_to_remote(
-                bucket, prefix, local_folder, result, concurrency, delete
+                bucket, prefix, local_folder, result, concurrency, delete, follow_symlinks
             )
 
     async def _sync_remote_to_local(
@@ -1037,6 +1068,7 @@ class InoS3Helper:
             result: Dict[str, Any],
             concurrency: int,
             delete_orphans: bool = True,
+            follow_symlinks: bool = False,
     ) -> Dict[str, Any]:
         """Internal: sync S3 prefix -> local folder (used when sync_local=True)."""
         max_concurrent = max(1, int(concurrency))
@@ -1081,10 +1113,16 @@ class InoS3Helper:
                 # Build local map under the sync root
                 local_files: Dict[str, Path] = {}
                 for file_path in local_folder.rglob("*"):
-                    if file_path.is_file():
+                    if not follow_symlinks and file_path.is_symlink():
+                        continue
+                    if not file_path.is_file():
+                        continue
+                    try:
                         rel = file_path.relative_to(local_folder)
-                        rel_norm = str(rel).replace("\\", "/")
-                        local_files[rel_norm] = file_path
+                    except ValueError:
+                        continue
+                    rel_norm = str(rel).replace("\\", "/")
+                    local_files[rel_norm] = file_path
 
                 remote_rel_set = set(remote_objects.keys())
                 local_rel_set = set(local_files.keys())
@@ -1113,6 +1151,9 @@ class InoS3Helper:
 
                 semaphore = asyncio.Semaphore(max_concurrent)
 
+                # Pre-resolve sync root once for path-traversal guard below.
+                local_folder_resolved = local_folder.resolve()
+
                 async def _sync_one(rel_key: str) -> Dict[str, Any]:
                     async with semaphore:
                         remote_obj = remote_objects[rel_key]
@@ -1122,6 +1163,23 @@ class InoS3Helper:
                         etag = etag_raw.strip('"') if isinstance(etag_raw, str) else None
 
                         local_file = local_folder / rel_key
+
+                        # Path-traversal guard: refuse S3 keys that resolve
+                        # outside the sync root (e.g. keys containing "../").
+                        try:
+                            local_file.resolve().relative_to(local_folder_resolved)
+                        except (ValueError, OSError):
+                            return {
+                                "relative_path": rel_key,
+                                "downloaded": False,
+                                "updated": False,
+                                "verify": ino_err(
+                                    f"Refused: S3 key would write outside sync root: {s3_obj_key}",
+                                    error_code="PathTraversalRefused",
+                                ),
+                                "attempts": 0,
+                            }
+
                         local_file.parent.mkdir(parents=True, exist_ok=True)
                         downloaded_any = False
                         updated_existing = False
@@ -1263,19 +1321,27 @@ class InoS3Helper:
             result: Dict[str, Any],
             concurrency: int,
             delete_orphans: bool = True,
+            follow_symlinks: bool = False,
     ) -> Dict[str, Any]:
         """Internal: sync local folder -> S3 prefix (used when sync_local=False)."""
         max_concurrent = max(1, int(concurrency))
         file_attempt_limit = max(3, self.retries + 1)
 
         try:
-            # Build local file map
+            # Build local file map (skip symlinks by default — same rationale
+            # as upload_folder: avoid cycles and out-of-tree files).
             local_files: Dict[str, Path] = {}
             for file_path in local_folder.rglob("*"):
-                if file_path.is_file():
+                if not follow_symlinks and file_path.is_symlink():
+                    continue
+                if not file_path.is_file():
+                    continue
+                try:
                     rel = file_path.relative_to(local_folder)
-                    rel_norm = str(rel).replace("\\", "/")
-                    local_files[rel_norm] = file_path
+                except ValueError:
+                    continue
+                rel_norm = str(rel).replace("\\", "/")
+                local_files[rel_norm] = file_path
 
             result["total_local_files"] = len(local_files)
 
@@ -1415,6 +1481,13 @@ class InoS3Helper:
                                 force_upload = True
                             except Exception as e:
                                 last_error = e
+                                # If the upload OR the verify call raised
+                                # (network blip, throttling, etc.), force a
+                                # fresh upload on the next attempt instead of
+                                # trusting the original ETag-match check —
+                                # otherwise an exception in verify would
+                                # deadlock us in skip-then-fail forever.
+                                force_upload = True
 
                             if attempt < file_attempt_limit - 1:
                                 wait_time = min(30.0, (2 ** attempt) + random.uniform(0, 1))
