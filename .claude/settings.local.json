@@ -23,7 +23,9 @@
       "Bash(curl -sL \"https://docs.vllm.ai/en/latest/features/reasoning_outputs.html\")",
       "Bash(C:/Users/noban/miniconda3/envs/InoPyUtils/python.exe -c \"import sys; sys.path.insert\\(0, 'src'\\); from inopyutils.s3_helper import InoS3Helper; print\\('import ok'\\); print\\('has _client_ctx:', hasattr\\(InoS3Helper, '_client_ctx'\\)\\); print\\('has _retry_file_op:', hasattr\\(InoS3Helper, '_retry_file_op'\\)\\)\")",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(C:/Users/noban/miniconda3/envs/InoPyUtils/python.exe -c ' *)",
+      "Bash(C:/Users/noban/miniconda3/envs/InoPyUtils/python.exe tests/s3_helper/test_s3_helper.py)"
     ]
   }
 }
