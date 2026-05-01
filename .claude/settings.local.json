@@ -20,7 +20,8 @@
       "Bash(curl -s \"https://api.github.com/repos/vllm-project/vllm/releases/tags/v0.11.0\")",
       "Bash(curl -s \"https://api.github.com/repos/vllm-project/vllm/releases\")",
       "Bash(curl -sL \"https://huggingface.co/DavidAU/Qwen3.6-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking/raw/main/README.md\")",
-      "Bash(curl -sL \"https://docs.vllm.ai/en/latest/features/reasoning_outputs.html\")"
+      "Bash(curl -sL \"https://docs.vllm.ai/en/latest/features/reasoning_outputs.html\")",
+      "Bash(C:/Users/noban/miniconda3/envs/InoPyUtils/python.exe -c \"import sys; sys.path.insert\\(0, 'src'\\); from inopyutils.s3_helper import InoS3Helper; print\\('import ok'\\); print\\('has _client_ctx:', hasattr\\(InoS3Helper, '_client_ctx'\\)\\); print\\('has _retry_file_op:', hasattr\\(InoS3Helper, '_retry_file_op'\\)\\)\")"
     ]
   }
 }
