@@ -6,7 +6,7 @@ Usage:
     python publish.py 1.8.0    — set exact version and publish
 
 Requires:
-    pip install build twine
+    pip install build twine setuptools wheel   # build runs with --no-isolation
 
 Reads PYPI_API_TOKEN from .env at project root.
 """
@@ -108,8 +108,11 @@ def clean_dist():
 
 def build():
     print("\n--- Building ---")
+    # --no-isolation: build's isolated venv breaks under conda on Windows
+    # (venvs made from a conda python can't find conda DLLs -> pyexpat
+    # ImportError). Uses this env's setuptools/wheel directly instead.
     result = subprocess.run(
-        [sys.executable, "-m", "build"],
+        [sys.executable, "-m", "build", "--no-isolation"],
         cwd=str(ROOT),
     )
     if result.returncode != 0:
