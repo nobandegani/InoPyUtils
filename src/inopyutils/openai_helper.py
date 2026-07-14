@@ -17,7 +17,7 @@ class InoOpenAIHelper:
             temperature: float = 0.7,
             max_tokens: int = 1024,
             top_p: float = 1.0,
-            enable_thinking: bool = True,
+            enable_thinking: Optional[bool] = None,
             repetition_penalty: Optional[float] = None,
             top_k: Optional[int] = None,
             min_p: Optional[float] = None,
@@ -42,8 +42,10 @@ class InoOpenAIHelper:
             max_tokens: Max tokens in the response.
             top_p: Nucleus sampling probability (default 1.0).
             enable_thinking: For Qwen3-style thinking models on vLLM, toggles the
-                thinking phase via the chat template (default True). Sent as
-                chat_template_kwargs.enable_thinking in extra_body.
+                thinking phase via the chat template. Default None means the
+                option is omitted entirely (required for the real OpenAI API,
+                which rejects chat_template_kwargs). Pass True/False explicitly
+                to send chat_template_kwargs.enable_thinking in extra_body.
             repetition_penalty: vLLM-specific. Penalty for repeated tokens
                 (typical: 1.0–1.1).
             top_k: vLLM-specific. Top-k sampling cutoff.
@@ -79,36 +81,42 @@ class InoOpenAIHelper:
                 )
             else:
                 client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-            # Build extra_body from vLLM-specific params + chat template toggle.
-            # User-provided extra_body wins on conflicts (deep-merged for
-            # chat_template_kwargs).
-            built_extra: dict = {}
-            chat_template_kwargs: dict = {"enable_thinking": enable_thinking}
+            try:
+                # Build extra_body from vLLM-specific params + chat template toggle.
+                # User-provided extra_body wins on conflicts (deep-merged for
+                # chat_template_kwargs).
+                built_extra: dict = {}
+                chat_template_kwargs: dict = {}
+                if enable_thinking is not None:
+                    chat_template_kwargs["enable_thinking"] = enable_thinking
 
-            if repetition_penalty is not None:
-                built_extra["repetition_penalty"] = repetition_penalty
-            if top_k is not None:
-                built_extra["top_k"] = top_k
-            if min_p is not None:
-                built_extra["min_p"] = min_p
+                if repetition_penalty is not None:
+                    built_extra["repetition_penalty"] = repetition_penalty
+                if top_k is not None:
+                    built_extra["top_k"] = top_k
+                if min_p is not None:
+                    built_extra["min_p"] = min_p
 
-            if extra_body:
-                user_ctk = extra_body.get("chat_template_kwargs")
-                if isinstance(user_ctk, dict):
-                    chat_template_kwargs.update(user_ctk)
-                built_extra.update({k: v for k, v in extra_body.items() if k != "chat_template_kwargs"})
+                if extra_body:
+                    user_ctk = extra_body.get("chat_template_kwargs")
+                    if isinstance(user_ctk, dict):
+                        chat_template_kwargs.update(user_ctk)
+                    built_extra.update({k: v for k, v in extra_body.items() if k != "chat_template_kwargs"})
 
-            built_extra["chat_template_kwargs"] = chat_template_kwargs
+                if chat_template_kwargs:
+                    built_extra["chat_template_kwargs"] = chat_template_kwargs
 
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                top_p=top_p,
-                extra_body=built_extra,
-                **kwargs
-            )
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    top_p=top_p,
+                    extra_body=built_extra or None,
+                    **kwargs
+                )
+            finally:
+                await client.close()
 
             choice = response.choices[0] if response.choices else None
             msg = choice.message if choice else None

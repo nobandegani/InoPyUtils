@@ -174,7 +174,16 @@ class InoFileHelper:
 
             if to_path.exists():
                 if to_path.is_dir():
-                    pass
+                    # shutil.move would drop the source INTO the directory, so the
+                    # effective destination is to_path / from_path.name — apply the
+                    # overwrite check against that resolved path.
+                    effective_dest = to_path / from_path.name
+                    if effective_dest.exists():
+                        if not overwrite:
+                            return ino_err(f"Destination exists: {effective_dest}")
+                        if effective_dest.is_dir():
+                            return ino_err(f"Destination directory exists (refusing to merge): {effective_dest}")
+                        effective_dest.unlink()
                 else:
                     if not overwrite:
                         return ino_err(f"Destination exists: {to_path}")
@@ -229,6 +238,8 @@ class InoFileHelper:
             files = [f for f in from_path.iterdir() if f.is_file()]
 
         error = False
+        files_copied = 0
+        files_skipped = 0
         for idx, file in enumerate(files, start=1):
             if not file.is_file():
                 log_lines.append(f"Not a file: {file}")
@@ -250,19 +261,22 @@ class InoFileHelper:
 
             dest = to_path / new_name
             if dest.exists():
-                log_lines.append(f"Target file trying to copy to is already exist: {dest}")
+                log_lines.append(f"Skipped (target already exists, not overwriting): {file.resolve()} => {dest.resolve()}")
+                files_skipped += 1
+                continue
 
             try:
                 await asyncio.to_thread(shutil.copy2, str(file), str(dest))
+                files_copied += 1
                 log_lines.append(f"Copied: {file.resolve()} => {dest.resolve()}")
             except Exception as e:
                 log_lines.append(f"Failed to copy {file} → {dest} — {e}")
                 error = True
 
         if error:
-            return ino_err(f"Failed to copy files, check logs", logs=log_lines)
+            return ino_err(f"Failed to copy files, check logs", logs=log_lines, files_copied=files_copied, files_skipped=files_skipped)
 
-        return ino_ok(f"Coping and renaming files completed", logs=log_lines)
+        return ino_ok(f"Coping and renaming files completed ({files_copied} copied, {files_skipped} skipped)", logs=log_lines, files_copied=files_copied, files_skipped=files_skipped)
 
     @staticmethod
     async def validate_files(
@@ -284,6 +298,21 @@ class InoFileHelper:
         video_convert_exts = video_convert_exts or [".avi", ".mov", ".mkv", ".flv"]
 
         log_lines = []
+        errors = []
+        images_processed = 0
+        videos_processed = 0
+        files_moved = 0
+        produced_targets: set[Path] = set()
+
+        def _unique_target(target: Path) -> Path:
+            """Uniquify a conversion target so it never overwrites an existing
+            file or a target already produced earlier in this run."""
+            candidate = target
+            counter = 1
+            while candidate.exists() or candidate in produced_targets:
+                candidate = target.with_name(f"{target.stem}_{counter}{target.suffix}")
+                counter += 1
+            return candidate
 
         skipped_images_path = input_path / "skipped_images"
         skipped_images_unsupported_path = input_path / "skipped_images_unsupported"
@@ -291,7 +320,11 @@ class InoFileHelper:
         skipped_videos_unsupported_path = input_path / "skipped_videos_unsupported"
         unsupported_files_path = input_path / "unsupported_files"
 
-        for file in input_path.iterdir():
+        # Materialize the listing before the loop: the loop moves files out of and
+        # creates converted files inside this directory, so lazy iteration is unsafe.
+        entries = sorted(input_path.iterdir())
+
+        for file in entries:
             if not file.is_file():
                 continue
 
@@ -300,18 +333,23 @@ class InoFileHelper:
             if include_image and ext in image_valid_exts:
                 image_validate = await InoMediaHelper.image_validate_pillow(file, file)
                 if ino_is_err(image_validate):
-                    return image_validate
+                    errors.append({"file": file.name, "error": image_validate.get("msg", "unknown error")})
+                    continue
 
+                images_processed += 1
                 log_lines.append(
                     image_validate
                 )
 
             elif include_image and ext in image_convert_exts:
-                new_file = file.with_suffix('.jpg')
+                new_file = _unique_target(file.with_suffix('.jpg'))
                 image_validate = await InoMediaHelper.image_validate_pillow(file, new_file)
                 if ino_is_err(image_validate):
-                    return image_validate
+                    errors.append({"file": file.name, "error": image_validate.get("msg", "unknown error")})
+                    continue
 
+                produced_targets.add(new_file)
+                images_processed += 1
                 log_lines.append(
                     image_validate
                 )
@@ -323,19 +361,28 @@ class InoFileHelper:
                     change_res=True,
                     change_fps=True
                 )
+                if ino_is_err(video_convert_res):
+                    errors.append({"file": file.name, "error": video_convert_res.get("msg", "unknown error")})
+                    continue
 
+                videos_processed += 1
                 log_lines.append(
                     video_convert_res
                 )
             elif include_video and ext in video_convert_exts:
-                new_file = file.with_suffix('.mp4')
+                new_file = _unique_target(file.with_suffix('.mp4'))
                 video_convert_res = await InoMediaHelper.video_convert_ffmpeg(
                     input_path=file,
                     output_path=new_file,
                     change_res=True,
                     change_fps=True
                 )
+                if ino_is_err(video_convert_res):
+                    errors.append({"file": file.name, "error": video_convert_res.get("msg", "unknown error")})
+                    continue
 
+                produced_targets.add(new_file)
+                videos_processed += 1
                 log_lines.append(
                     video_convert_res
                 )
@@ -343,7 +390,9 @@ class InoFileHelper:
                 move_file = skipped_images_path / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
                 if ino_is_err(move_file_res):
-                    return move_file_res
+                    errors.append({"file": file.name, "error": move_file_res.get("msg", "unknown error")})
+                    continue
+                files_moved += 1
                 log_lines.append(
                     f"Skipped image: {file.name}"
                 )
@@ -351,7 +400,9 @@ class InoFileHelper:
                 move_file = skipped_images_unsupported_path / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
                 if ino_is_err(move_file_res):
-                    return move_file_res
+                    errors.append({"file": file.name, "error": move_file_res.get("msg", "unknown error")})
+                    continue
+                files_moved += 1
                 log_lines.append(
                     f"Skipped unsupported image: {file.name}"
                 )
@@ -359,7 +410,9 @@ class InoFileHelper:
                 move_file = skipped_videos_path / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
                 if ino_is_err(move_file_res):
-                    return move_file_res
+                    errors.append({"file": file.name, "error": move_file_res.get("msg", "unknown error")})
+                    continue
+                files_moved += 1
                 log_lines.append(
                     f"Skipped video: {file.name}"
                 )
@@ -367,7 +420,9 @@ class InoFileHelper:
                 move_file = skipped_videos_unsupported_path / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
                 if ino_is_err(move_file_res):
-                    return move_file_res
+                    errors.append({"file": file.name, "error": move_file_res.get("msg", "unknown error")})
+                    continue
+                files_moved += 1
                 log_lines.append(
                     f"Skipped unsupported video: {file.name}"
                 )
@@ -376,13 +431,34 @@ class InoFileHelper:
                 move_file = unsupported_files_path / file.name
                 move_file_res = await InoFileHelper.move_path(file, move_file)
                 if ino_is_err(move_file_res):
-                    return move_file_res
+                    errors.append({"file": file.name, "error": move_file_res.get("msg", "unknown error")})
+                    continue
+                files_moved += 1
                 log_lines.append(
                     f"Skipped unsupported file: {file.name}"
                 )
 
+        if errors:
+            return ino_err(
+                f"Validating files completed with {len(errors)} error(s)",
+                errors=errors,
+                images_processed=images_processed,
+                videos_processed=videos_processed,
+                files_moved=files_moved,
+                skipped_images_path=skipped_images_path,
+                skipped_images_unsupported_path=skipped_images_unsupported_path,
+                skipped_videos_path=skipped_videos_path,
+                skipped_videos_unsupported_path=skipped_videos_unsupported_path,
+                unsupported_files_path=unsupported_files_path,
+                logs=log_lines
+            )
+
         return ino_ok(
             f"Validating files completed",
+            errors=errors,
+            images_processed=images_processed,
+            videos_processed=videos_processed,
+            files_moved=files_moved,
             skipped_images_path=skipped_images_path,
             skipped_images_unsupported_path=skipped_images_unsupported_path,
             skipped_videos_path=skipped_videos_path,

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Tuple, Union, Callable
 
+import aiofiles
 import aiohttp
 import mimetypes
 import re
@@ -231,7 +232,10 @@ class InoHttpHelper:
                     method=method.upper(),
                     attempts=attempt,
                 )
-            except (aiohttp.ClientConnectionError, aiohttp.ServerTimeoutError, aiohttp.ClientOSError, aiohttp.TooManyRedirects) as ce:
+            except aiohttp.ClientError as ce:
+                # Broad aiohttp failure family: connection errors, timeouts,
+                # mid-body disconnects (ClientPayloadError), invalid URLs, …
+                # Anything narrower lets exceptions escape the envelope contract.
                 last_exc = ce
                 if attempt < attempts:
                     await self._sleep_backoff(attempt)
@@ -252,6 +256,18 @@ class InoHttpHelper:
                     continue
                 return ino_err(
                     "Request timed out: " + str(te),
+                    status_code=None,
+                    headers={},
+                    data=None,
+                    url=full_url,
+                    method=method.upper(),
+                    attempts=attempt,
+                )
+            except (UnicodeDecodeError, ValueError) as pe:
+                # Body decode/parse failure (e.g. force_json against an HTML
+                # error page). Retrying won't produce different bytes — fail fast.
+                return ino_err(
+                    f"Failed to decode response body: {pe}",
                     status_code=None,
                     headers={},
                     data=None,
@@ -522,6 +538,15 @@ class InoHttpHelper:
             requested_connections = 1
         requested_connections = max(1, min(10, requested_connections))
 
+        if requested_connections > 1 and resume and tmp.exists():
+            # A previous multi-connection attempt preallocates tmp to its full
+            # size, so its length says nothing about which bytes were actually
+            # written — resuming into it risks silent corruption. Start clean.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
         range_supported = False
         range_probe_total_size: Optional[int] = None
         if requested_connections > 1:
@@ -713,11 +738,11 @@ class InoHttpHelper:
                             attempt -= 1
                             continue
                     else:
-                        with open(tmp, mode) as f:
+                        async with aiofiles.open(tmp, mode) as f:
                             async for chunk in resp.content.iter_chunked(max(1, int(chunk_size))):
                                 if not chunk:
                                     continue
-                                f.write(chunk)
+                                await f.write(chunk)
                                 bytes_downloaded += len(chunk)
                                 if progress:
                                     try:
@@ -725,23 +750,32 @@ class InoHttpHelper:
                                     except Exception:
                                         pass
 
-                    # Verify size if requested and known
-                    if verify_size and total_size is not None and bytes_downloaded != total_size:
+                    # Verify size if requested and known. Skip when the body
+                    # was transparently decompressed (Content-Encoding): the
+                    # bytes written are decoded while Content-Length counts
+                    # the encoded stream, so they legitimately differ.
+                    content_encoding = (resp.headers.get("Content-Encoding") or "").lower()
+                    if (
+                        verify_size
+                        and total_size is not None
+                        and content_encoding in ("", "identity")
+                        and bytes_downloaded != total_size
+                    ):
                         # Size mismatch: consider retry if attempts left
                         raise IOError(
                             f"Downloaded size mismatch: got {bytes_downloaded}, expected {total_size}"
                         )
 
                     # Finalize: replace destination atomically
-                    try:
-                        if dest.exists():
+                    def _finalize() -> None:
+                        try:
                             os.replace(tmp, dest)
-                        else:
-                            tmp.replace(dest)
-                    except FileNotFoundError:
-                        # Parent may have been deleted concurrently; recreate and retry replace
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        os.replace(tmp, dest)
+                        except FileNotFoundError:
+                            # Parent may have been deleted concurrently; recreate and retry replace
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            os.replace(tmp, dest)
+
+                    await asyncio.to_thread(_finalize)
 
                     headers_out = {k: v for k, v in resp.headers.items()}
                     return ino_ok(
@@ -888,8 +922,11 @@ class InoHttpHelper:
         part_count = max(1, min(connections, total_size))
         base_headers = dict(headers or {})
 
-        with open(tmp, "wb") as f:
-            f.truncate(total_size)
+        def _preallocate() -> None:
+            with open(tmp, "wb") as f:
+                f.truncate(total_size)
+
+        await asyncio.to_thread(_preallocate)
 
         ranges = []
         part_size = total_size // part_count
@@ -922,14 +959,14 @@ class InoHttpHelper:
                     raise IOError(f"Range request failed with status {part_resp.status}")
 
                 remaining = end - start + 1
-                with open(tmp, "r+b") as f:
-                    f.seek(start)
+                async with aiofiles.open(tmp, "r+b") as f:
+                    await f.seek(start)
                     async for chunk in part_resp.content.iter_chunked(max(1, int(chunk_size))):
                         if not chunk:
                             continue
                         if len(chunk) > remaining:
                             chunk = chunk[:remaining]
-                        f.write(chunk)
+                        await f.write(chunk)
                         got = len(chunk)
                         remaining -= got
                         async with progress_lock:
@@ -945,7 +982,18 @@ class InoHttpHelper:
                 if remaining != 0:
                     raise IOError("Range download ended before expected bytes were received")
 
-        await asyncio.gather(*(_worker(start, end) for start, end in ranges))
+        tasks = [asyncio.create_task(_worker(start, end)) for start, end in ranges]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            # One worker failed — cancel the survivors and wait for them to
+            # actually exit before the caller cleans up tmp. Zombie writers
+            # otherwise keep the file open (blocking unlink on Windows) and
+            # can write into a retried download at stale offsets.
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         return downloaded
 
     async def _sleep_backoff(self, attempt: int) -> None:

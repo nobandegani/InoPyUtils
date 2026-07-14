@@ -20,7 +20,7 @@ class InoThumbnailHelper:
         image_path: Path,
         output_dir: Optional[Path] = None,
         sizes: Iterable[int] = (256, 512, 1024),
-        quality: int = 50,
+        quality: int = 90,
         crop: bool = False,
         prefix:str = "ino_t"
     ) -> dict:
@@ -75,6 +75,11 @@ class InoThumbnailHelper:
 
         try:
             original_image = ImageOps.exif_transpose(original_image)
+
+            # Convert palette / exotic modes to RGB BEFORE cropping/resizing:
+            # resizing a P-mode image silently downgrades LANCZOS to NEAREST.
+            if original_image.mode not in ("RGB", "RGBA", "L"):
+                original_image = original_image.convert("RGB")
 
             width, height = original_image.size
             if crop:

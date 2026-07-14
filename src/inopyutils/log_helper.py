@@ -40,6 +40,7 @@ class InoLogHelper:
 
         self.log_file = None
         self._initialized = False
+        self._lock = asyncio.Lock()
 
     @classmethod
     async def create(cls, path_to_save: Path | str, log_name: str, max_file_size_mb: int = 10):
@@ -96,9 +97,10 @@ class InoLogHelper:
         else:
             self.log_file = self.path / f"{self.log_name}_00001.inolog"
 
-        if not self.log_file.exists():
-            async with aiofiles.open(self.log_file, 'w', encoding='utf-8') as f:
-                pass
+        # Open in append mode so an existing file is never truncated
+        # (creates the file if it does not exist).
+        async with aiofiles.open(self.log_file, 'a', encoding='utf-8'):
+            pass
 
     async def add(self, log_type: LogType | None = None, msg: str = "", log_data: dict | None = None, source: str | None = None) -> None:
         """
@@ -111,36 +113,39 @@ class InoLogHelper:
             source (str | None): Optional source identifier (function, class, module name).
         """
 
-        await self._ensure_initialized()
+        # Hold the lock across size-check + rotation + write so concurrent
+        # add() calls cannot both rotate or interleave with the rotation.
+        async with self._lock:
+            await self._ensure_initialized()
 
-        if self.log_file.exists() and self.log_file.stat().st_size >= self.max_file_size_bytes:
-            await self._create_log_file()
+            if self.log_file.exists() and self.log_file.stat().st_size >= self.max_file_size_bytes:
+                await self._create_log_file()
 
-        # Determine effective log type
-        if log_type is None:
-            if isinstance(log_data, dict) and "success" in log_data:
-                effective_type = LogType.INFO if log_data.get("success") else LogType.ERROR
+            # Determine effective log type
+            if log_type is None:
+                if isinstance(log_data, dict) and "success" in log_data:
+                    effective_type = LogType.INFO if log_data.get("success") else LogType.ERROR
+                else:
+                    effective_type = LogType.INFO
             else:
-                effective_type = LogType.INFO
-        else:
-            effective_type = log_type
+                effective_type = log_type
 
-        if source is None:
-            source = "unknown"
+            if source is None:
+                source = "unknown"
 
-        now = datetime.datetime.now()
-        entry = {
-            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-            "source": source,
-            "type": effective_type.value,
-            "msg": msg,
-            "data": log_data
-        }
+            now = datetime.datetime.now()
+            entry = {
+                "timestamp": now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                "source": source,
+                "type": effective_type.value,
+                "msg": msg,
+                "data": log_data
+            }
 
-        #entry = {k: v for k, v in entry.items() if v is not None}
+            #entry = {k: v for k, v in entry.items() if v is not None}
 
-        async with aiofiles.open(self.log_file, "a", encoding="utf-8") as f:
-            await f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+            async with aiofiles.open(self.log_file, "a", encoding="utf-8") as f:
+                await f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
 
     async def debug(self, msg: str = "", log_data: dict | None = None, source: str | None = None) -> None:
         """Convenience method for DEBUG level logs."""

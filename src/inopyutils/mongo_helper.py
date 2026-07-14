@@ -10,8 +10,9 @@ Design goals
 Example (FastAPI)
 
     from fastapi import FastAPI
-    from inopyutils.mongo_helper import mongo
+    from inopyutils import InoMongoHelper
 
+    mongo = InoMongoHelper()
     app = FastAPI()
 
     @app.on_event("startup")
@@ -80,16 +81,27 @@ class InoMongoHelper:
 
     ObjectId handling
     - By default, returned documents convert the top-level `_id` field to str.
-    - Filters that contain `_id` as str are automatically converted to ObjectId.
+    - Filters that contain `_id` as str are automatically converted to ObjectId
+      (disable with `auto_convert_object_id=False` in the constructor).
     - You can override conversion per-call using `convert_id_to_str`.
     """
 
-    def __init__(self, *, convert_id_to_str: bool = True) -> None:
+    def __init__(self, *, convert_id_to_str: bool = True, auto_convert_object_id: bool = True) -> None:
+        """
+        Args:
+            convert_id_to_str: When True (default), the top-level `_id` field of
+                returned documents is converted from ObjectId to str.
+            auto_convert_object_id: When True (default), `_id` values in filters
+                that look like ObjectIds (24-hex-char strings) are automatically
+                converted to ObjectId. Set to False if your collections use plain
+                string `_id` values that must be matched verbatim.
+        """
         self._client: Optional[AsyncIOMotorClient] = None
         self._db: Optional[AsyncIOMotorDatabase] = None
         self._db_name: Optional[str] = None
         self._uri: Optional[str] = None
         self._convert_id_to_str_default: bool = convert_id_to_str
+        self._auto_convert_object_id: bool = auto_convert_object_id
         self._lock = asyncio.Lock()
 
     # ------------------------------
@@ -307,6 +319,8 @@ class InoMongoHelper:
             return {}
         # Copy and normalize `_id`
         out: Dict[str, Any] = dict(flt)
+        if not self._auto_convert_object_id:
+            return out
         if "_id" in out:
             out_id = out["_id"]
             # Support operator-style filters on _id (e.g., {"_id": {"$in": [...]}})

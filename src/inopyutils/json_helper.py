@@ -328,8 +328,6 @@ class InoJsonHelper:
                     for key, value in obj.items():
                         if key in keys:
                             filtered[key] = _filter_deep(value, keys) if deep else value
-                        elif deep:
-                            filtered[key] = _filter_deep(value, keys)
                     return filtered
                 elif isinstance(obj, list):
                     return [_filter_deep(item, keys) for item in obj]

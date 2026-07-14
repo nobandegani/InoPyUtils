@@ -1,11 +1,14 @@
 import os
 import asyncio
+import logging
 
 from pathlib import Path
 
 from .util_helper import ino_is_err, ino_ok, ino_err
 from .file_helper import InoFileHelper
 from .http_helper import InoHttpHelper
+
+logger = logging.getLogger(__name__)
 
 class InoCivitHelper:
     def __init__(self, token: str | None = None):
@@ -14,9 +17,9 @@ class InoCivitHelper:
 
         self.token = token
 
-        self.default_headers = {
-            "Authorization": f"Bearer {token}"
-        }
+        self.default_headers = {}
+        if token is not None:
+            self.default_headers["Authorization"] = f"Bearer {token}"
 
         self.http_client = InoHttpHelper(
             timeout_total=None,
@@ -47,12 +50,22 @@ class InoCivitHelper:
         get_model_req = await self.http_client.get(
             url=f"https://civitai.com/api/v1/model-versions/{model_version}"
         )
+        if ino_is_err(get_model_req):
+            return get_model_req
+
+        model_data = get_model_req["data"]
+        if not isinstance(model_data, dict) or "files" not in model_data:
+            return ino_err(
+                f"model version response has no 'files' field",
+                status_code=get_model_req["status_code"],
+            )
+
         return {
             "success": get_model_req["success"],
             "msg": get_model_req["msg"],
             "status_code": get_model_req["status_code"],
-            "model": get_model_req["data"],
-            "files": get_model_req["data"]["files"],
+            "model": model_data,
+            "files": model_data["files"],
             "headers": get_model_req["headers"],
         }
 
@@ -96,26 +109,33 @@ class InoCivitHelper:
             return ino_err(f"file_id is not valid")
 
 
-        remote_file_url = remote_file["downloadUrl"]
-        remote_file_sha:str = remote_file["hashes"]["SHA256"]
+        remote_file_url = remote_file.get("downloadUrl")
+        if not remote_file_url:
+            return ino_err(f"remote file has no downloadUrl")
+
+        remote_file_sha: str | None = (remote_file.get("hashes") or {}).get("SHA256")
 
         local_file_path: Path = model_path / remote_file["name"]
 
-        verify_local_res = await self.verify_local_file(local_file_path, remote_file_sha, chunk_size)
-        if ino_is_err(verify_local_res):
-            return verify_local_res
-
-        if verify_local_res["verified"]:
-            return ino_ok(
-                f"Download model skipped, model already downloaded and verified",
-                local_file_path=local_file_path,
-                local_file_name=local_file_path.name,
-                model_info=model,
-                remote_file_info=remote_file,
-                remote_files_info=remote_files
-            )
+        if remote_file_sha is None:
+            logger.warning("remote file has no SHA256 hash; skipping hash verification")
         else:
-            print(verify_local_res["msg"])
+            verify_local_res = await self.verify_local_file(local_file_path, remote_file_sha, chunk_size)
+            if ino_is_err(verify_local_res):
+                return verify_local_res
+
+            if verify_local_res["verified"]:
+                return ino_ok(
+                    f"Download model skipped, model already downloaded and verified",
+                    local_file_path=local_file_path,
+                    local_file_name=local_file_path.name,
+                    model_info=model,
+                    remote_file_info=remote_file,
+                    remote_files_info=remote_files,
+                    sha256_verified=True
+                )
+            else:
+                logger.info(verify_local_res["msg"])
 
         download_file_res = await self.http_client.download(
             url=remote_file_url,
@@ -126,13 +146,22 @@ class InoCivitHelper:
             allow_redirects=True,
             mkdirs=True,
             verify_size=True,
+            filename=remote_file["name"],
             connection=download_connections,
         )
         if ino_is_err(download_file_res):
             return download_file_res
 
-        if download_file_res["status_code"] != 200:
-            return ino_err(f"download failed", status_code=download_file_res["status_code"], status_msg=download_file_res["msg"])
+        if remote_file_sha is None:
+            return ino_ok(
+                f"Download model completed, no SHA256 hash provided so file not verified",
+                local_file_path=local_file_path,
+                local_file_name=local_file_path.name,
+                model_info=model,
+                remote_file_info=remote_file,
+                remote_files_info=remote_files,
+                sha256_verified=False
+            )
 
         verify_local_res = await self.verify_local_file(local_file_path, remote_file_sha, chunk_size)
         if ino_is_err(verify_local_res) or not verify_local_res["verified"]:
@@ -144,5 +173,6 @@ class InoCivitHelper:
             local_file_name=local_file_path.name,
             model_info=model,
             remote_file_info=remote_file,
-            remote_files_info=remote_files
+            remote_files_info=remote_files,
+            sha256_verified=True
         )

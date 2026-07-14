@@ -1,6 +1,10 @@
 import re
 import asyncio
 
+from .util_helper import ino_ok, ino_err
+
+_FFMPEG_STDERR_MAX = 2000
+
 class InoAudioHelper:
     @staticmethod
     async def transcode_raw_pcm(
@@ -13,7 +17,8 @@ class InoAudioHelper:
             channel: int = 1,
             gain_db: float | None = None,
             limit_after_gain: bool = True,
-            limit_ceiling: float = 0.98
+            limit_ceiling: float = 0.98,
+            bitrate: str = "24k"
     ) -> dict:
         args = [
             "ffmpeg",
@@ -32,38 +37,40 @@ class InoAudioHelper:
         if afilters:
             args += ["-filter:a", ",".join(afilters)]
 
+        args += ["-c:a", codec]
+
+        codec_lower = codec.lower()
+        if not codec_lower.startswith("pcm"):
+            args += ["-b:a", bitrate]
+
+        if codec_lower in ("libopus", "opus"):
+            args += [
+                "-vbr", "on",
+                "-application", application,
+                "-sample_fmt", "s16",
+            ]
+
         args += [
-            "-c:a", codec,
-            "-b:a", "24k",
-            "-vbr", "on",
-            "-application", application,
-            "-sample_fmt", "s16",
             "-f", output,
             "pipe:1",
         ]
 
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            return ino_err("ffmpeg not found: make sure ffmpeg is installed and on PATH", data=b"")
 
         out, err = await process.communicate(input=pcm_bytes)
         if process.returncode != 0:
-            return {
-                "success": False,
-                "msg": "ffmpeg failed",
-                "error_code": err.decode(),
-                "data": b""
-            }
+            err_text = err.decode(errors="ignore")[:_FFMPEG_STDERR_MAX]
+            return ino_err(f"ffmpeg failed: {err_text}", ffmpeg_stderr=err_text, data=b"")
 
-        return {
-            "success": True,
-            "msg": "Transcode successful",
-            "error_code": err.decode(),
-            "data": out
-        }
+        return ino_ok("Transcode successful", data=out)
 
     @staticmethod
     async def audio_to_raw_pcm(
@@ -85,8 +92,8 @@ class InoAudioHelper:
             dict with keys:
                 success: bool
                 msg: str
-                error_code: str (ffmpeg stderr)
                 data: bytes (raw PCM)
+                ffmpeg_stderr: str (only on ffmpeg failure, truncated)
         """
         # Build ffmpeg command to read from stdin and output raw PCM to stdout
         # We avoid forcing input format, letting ffmpeg auto-detect from stream headers.
@@ -102,28 +109,22 @@ class InoAudioHelper:
             "pipe:1",
         ]
 
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            return ino_err("ffmpeg not found: make sure ffmpeg is installed and on PATH", data=b"")
 
         out, err = await process.communicate(input=audio)
         if process.returncode != 0:
-            return {
-                "success": False,
-                "msg": "ffmpeg failed",
-                "error_code": err.decode(errors="ignore"),
-                "data": b"",
-            }
+            err_text = err.decode(errors="ignore")[:_FFMPEG_STDERR_MAX]
+            return ino_err(f"ffmpeg failed: {err_text}", ffmpeg_stderr=err_text, data=b"")
 
-        return {
-            "success": True,
-            "msg": "Decode to raw PCM successful",
-            "error_code": err.decode(errors="ignore"),
-            "data": out,
-        }
+        return ino_ok("Decode to raw PCM successful", data=out)
 
     @staticmethod
     async def chunks_raw_pcm(
@@ -146,29 +147,14 @@ class InoAudioHelper:
         """
         # Validate inputs
         if not isinstance(audio, (bytes, bytearray)):
-            return {
-                "success": False,
-                "msg": "audio must be bytes or bytearray",
-                "count": 0,
-                "chunks": [],
-            }
+            return ino_err("audio must be bytes or bytearray", count=0, chunks=[])
         if not isinstance(chunk_size, int) or chunk_size <= 0:
-            return {
-                "success": False,
-                "msg": "chunk_size must be a positive integer",
-                "count": 0,
-                "chunks": [],
-            }
+            return ino_err("chunk_size must be a positive integer", count=0, chunks=[])
 
         data = bytes(audio)
         chunks = [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)] if data else []
 
-        return {
-            "success": True,
-            "msg": "Raw PCM chunked successfully",
-            "count": len(chunks),
-            "chunks": chunks,
-        }
+        return ino_ok("Raw PCM chunked successfully", count=len(chunks), chunks=chunks)
 
     @staticmethod
     def get_audio_duration_from_text (text: str, wpm: float = 160.0) -> float:

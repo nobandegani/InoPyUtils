@@ -64,7 +64,7 @@ class InoS3Helper:
         )
     """
 
-    def __init__(self, aws_access_key_id: Optional[str] = None, aws_secret_access_key: Optional[str] = None, aws_session_token: Optional[str] = None, region_name: str = "us-east-1", bucket_name: Optional[str] = None, endpoint_url: Optional[str] = None, retries: int = 3, config: Optional[Config] = None):
+    def __init__(self, aws_access_key_id: Optional[str] = None, aws_secret_access_key: Optional[str] = None, aws_session_token: Optional[str] = None, region_name: str = "us-east-1", bucket_name: Optional[str] = None, endpoint_url: Optional[str] = None, retries: int = 3, config: Optional[Config] = None, upload_checksum_algorithm: Optional[str] = None):
         self.region_name = region_name
         self.bucket_name = bucket_name
         self.endpoint_url = endpoint_url
@@ -76,6 +76,10 @@ class InoS3Helper:
         self._client = None
         self._client_cm = None
         self._client_lock = asyncio.Lock()
+        # Event loop the cached client (and lock) belong to. A helper reused
+        # across multiple asyncio.run() calls must not reuse a client bound
+        # to a closed loop — _get_client() rebuilds it when the loop changes.
+        self._client_loop = None
 
         self.transfer_config: Optional[TransferConfig] = None
         # Always call init to set up session, config, and transfer_config
@@ -88,6 +92,7 @@ class InoS3Helper:
             endpoint_url=endpoint_url,
             retries=retries,
             config=config,
+            upload_checksum_algorithm=upload_checksum_algorithm,
         )
 
     def init(
@@ -99,7 +104,8 @@ class InoS3Helper:
             bucket_name: Optional[str] = None,
             endpoint_url: Optional[str] = None,
             retries: int = 3,
-            config: Optional[Config] = None
+            config: Optional[Config] = None,
+            upload_checksum_algorithm: Optional[str] = None
     ):
         """
         Initialize S3 client with AWS credentials and configuration
@@ -115,6 +121,11 @@ class InoS3Helper:
             endpoint_url: Custom endpoint URL for S3-compatible services (e.g., Backblaze B2)
             retries: Number of retry attempts for failed operations (default: 3)
             config: Optional botocore.config.Config for fine-tuning (timeouts, retries, signature version, etc.)
+            upload_checksum_algorithm: Optional checksum algorithm ("SHA256",
+                "SHA1", "CRC32", "CRC32C") attached to uploads via
+                ChecksumAlgorithm. Required for verify_file's sha256 check to
+                have anything to compare against on AWS S3. Default None
+                (off) because not every S3-compatible provider accepts it.
         """
 
         # If a shared client was already cached (init() called post-construction),
@@ -130,6 +141,7 @@ class InoS3Helper:
         self.bucket_name = bucket_name
         self.endpoint_url = endpoint_url
         self.retries = retries
+        self.upload_checksum_algorithm = upload_checksum_algorithm
 
         # Build default botocore Config with sane timeouts and addressing style
         default_cfg = Config(
@@ -193,8 +205,22 @@ class InoS3Helper:
         The client is reused across all method calls to avoid TCP+TLS handshake
         churn. It's torn down by close() / __aexit__.
         """
-        if self._client is not None:
+        loop = asyncio.get_running_loop()
+        if self._client is not None and self._client_loop is loop:
             return self._client
+        if self._client_loop is not None and self._client_loop is not loop:
+            # The cached client (and its lock) belong to a previous event loop
+            # (e.g. an earlier asyncio.run()). They can't be awaited from this
+            # loop — drop them and rebuild. The old aiohttp connections died
+            # with their loop; nothing useful can be closed cross-loop.
+            logger.warning(
+                "InoS3Helper: event loop changed since the S3 client was "
+                "created; discarding the stale client and creating a new one."
+            )
+            self._client = None
+            self._client_cm = None
+            self._client_lock = asyncio.Lock()
+        self._client_loop = loop
         async with self._client_lock:
             if self._client is not None:
                 return self._client
@@ -264,6 +290,27 @@ class InoS3Helper:
         while "//" in k:
             k = k.replace("//", "/")
         return k
+
+    @staticmethod
+    def _walk_local_files(local_folder: Path, follow_symlinks: bool) -> Dict[str, Path]:
+        """Blocking recursive walk building {relative-posix-path: Path}.
+
+        Skips symlinks (unless follow_symlinks) and anything that isn't a
+        regular file. Call via asyncio.to_thread — on large trees or network
+        drives this walk would otherwise stall the event loop.
+        """
+        files: Dict[str, Path] = {}
+        for file_path in local_folder.rglob("*"):
+            if not follow_symlinks and file_path.is_symlink():
+                continue
+            if not file_path.is_file():
+                continue
+            try:
+                rel = file_path.relative_to(local_folder)
+            except ValueError:
+                continue
+            files[str(rel).replace("\\", "/")] = file_path
+        return files
 
     async def _retry_file_op(
             self,
@@ -460,6 +507,8 @@ class InoS3Helper:
                     guess, _ = mimetypes.guess_type(local_file_path)
                     if guess:
                         local_extra_args["ContentType"] = guess
+                if self.upload_checksum_algorithm and "ChecksumAlgorithm" not in local_extra_args:
+                    local_extra_args["ChecksumAlgorithm"] = self.upload_checksum_algorithm
                 await s3.upload_file(
                     local_file_path,
                     bucket,
@@ -922,7 +971,10 @@ class InoS3Helper:
                 verification = await self.verify_folder_sync(
                     s3_folder_key=s3_folder_key,
                     local_folder_path=local_folder_path,
-                    bucket_name=bucket
+                    bucket_name=bucket,
+                    # Files that were already in the local folder before this
+                    # download are not a failure of the download itself.
+                    ignore_extra_local=True
                 )
                 result["verification"] = verification
                 if not verification.get("success", False):
@@ -1121,18 +1173,9 @@ class InoS3Helper:
                 result["total_remote_files"] = len(remote_objects)
 
                 # Build local map under the sync root
-                local_files: Dict[str, Path] = {}
-                for file_path in local_folder.rglob("*"):
-                    if not follow_symlinks and file_path.is_symlink():
-                        continue
-                    if not file_path.is_file():
-                        continue
-                    try:
-                        rel = file_path.relative_to(local_folder)
-                    except ValueError:
-                        continue
-                    rel_norm = str(rel).replace("\\", "/")
-                    local_files[rel_norm] = file_path
+                local_files: Dict[str, Path] = await asyncio.to_thread(
+                    self._walk_local_files, local_folder, follow_symlinks
+                )
 
                 result["total_local_files"] = len(local_files)
 
@@ -1156,24 +1199,38 @@ class InoS3Helper:
                 # Remove files not present in remote (only when delete_orphans=True)
                 if delete_orphans:
                     to_remove = sorted(local_rel_set - remote_rel_set)
-                    for rel in to_remove:
-                        try:
-                            local_files[rel].unlink(missing_ok=True)
-                            result["removed_local"] += 1
-                        except Exception as e:
-                            result["failed"] += 1
-                            msg = f"Failed to remove stale local file {local_files[rel]}: {str(e)}"
-                            result["errors"].append(msg)
-                            logger.error(msg)
 
-                    # Cleanup empty directories bottom-up
-                    dirs = sorted([p for p in local_folder.rglob("*") if p.is_dir()], key=lambda p: len(p.parts), reverse=True)
-                    for d in dirs:
-                        try:
-                            if not any(d.iterdir()):
-                                d.rmdir()
-                        except Exception:
-                            pass
+                    def _remove_orphans() -> tuple:
+                        removed = 0
+                        removal_errors = []
+                        for rel in to_remove:
+                            try:
+                                local_files[rel].unlink(missing_ok=True)
+                                removed += 1
+                            except Exception as e:
+                                removal_errors.append(
+                                    f"Failed to remove stale local file {local_files[rel]}: {str(e)}"
+                                )
+                        # Cleanup empty directories bottom-up
+                        dirs = sorted(
+                            (p for p in local_folder.rglob("*") if p.is_dir()),
+                            key=lambda p: len(p.parts),
+                            reverse=True,
+                        )
+                        for d in dirs:
+                            try:
+                                if not any(d.iterdir()):
+                                    d.rmdir()
+                            except Exception:
+                                pass
+                        return removed, removal_errors
+
+                    removed_count, removal_errors = await asyncio.to_thread(_remove_orphans)
+                    result["removed_local"] += removed_count
+                    for msg in removal_errors:
+                        result["failed"] += 1
+                        result["errors"].append(msg)
+                        logger.error(msg)
 
                 semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -1365,18 +1422,9 @@ class InoS3Helper:
         try:
             # Build local file map (skip symlinks by default — same rationale
             # as upload_folder: avoid cycles and out-of-tree files).
-            local_files: Dict[str, Path] = {}
-            for file_path in local_folder.rglob("*"):
-                if not follow_symlinks and file_path.is_symlink():
-                    continue
-                if not file_path.is_file():
-                    continue
-                try:
-                    rel = file_path.relative_to(local_folder)
-                except ValueError:
-                    continue
-                rel_norm = str(rel).replace("\\", "/")
-                local_files[rel_norm] = file_path
+            local_files: Dict[str, Path] = await asyncio.to_thread(
+                self._walk_local_files, local_folder, follow_symlinks
+            )
 
             result["total_local_files"] = len(local_files)
 
@@ -1502,6 +1550,8 @@ class InoS3Helper:
                                     guess, _ = mimetypes.guess_type(str(local_file))
                                     if guess:
                                         extra_args["ContentType"] = guess
+                                    if self.upload_checksum_algorithm:
+                                        extra_args["ChecksumAlgorithm"] = self.upload_checksum_algorithm
                                     await s3.upload_file(
                                         str(local_file),
                                         bucket,
@@ -1690,26 +1740,19 @@ class InoS3Helper:
             # Find all files in the local folder recursively. By default
             # we skip symlinks to avoid uploading files outside the target
             # tree or looping on symlink cycles.
-            all_files = []
-            for file_path in local_folder.rglob("*"):
-                if not follow_symlinks and file_path.is_symlink():
-                    continue
-                if not file_path.is_file():
-                    continue
-                # Get relative path from the base folder
-                try:
-                    relative_path = file_path.relative_to(local_folder)
-                except ValueError:
-                    # File resolves outside local_folder (via symlinks etc.) — skip
-                    logger.warning(f"Skipping file outside upload root: {file_path}")
-                    continue
-                # Convert Windows paths to forward slashes for S3
-                s3_key = s3_folder_key + str(relative_path).replace("\\", "/")
-                all_files.append({
+            walked = await asyncio.to_thread(
+                self._walk_local_files, local_folder, follow_symlinks
+            )
+            all_files = [
+                {
                     "local_path": str(file_path),
-                    "s3_key": s3_key,
-                    "relative_path": str(relative_path)
-                })
+                    # rel_norm already uses forward slashes for S3
+                    "s3_key": s3_folder_key + rel_norm,
+                    # keep native separators here, as before
+                    "relative_path": str(Path(rel_norm)),
+                }
+                for rel_norm, file_path in walked.items()
+            ]
 
             result["total_files"] = len(all_files)
             
@@ -1766,6 +1809,8 @@ class InoS3Helper:
                         extra_args: Dict[str, Any] = dict(provider_args)
                         if "ContentType" not in extra_args and guess:
                             extra_args["ContentType"] = guess
+                        if self.upload_checksum_algorithm and "ChecksumAlgorithm" not in extra_args:
+                            extra_args["ChecksumAlgorithm"] = self.upload_checksum_algorithm
 
                         async def _do_upload() -> Dict[str, Any]:
                             await s3.upload_file(
@@ -1835,7 +1880,10 @@ class InoS3Helper:
                 verification = await self.verify_folder_sync(
                     s3_folder_key=s3_folder_key,
                     local_folder_path=local_folder_path,
-                    bucket_name=bucket
+                    bucket_name=bucket,
+                    # Objects that were already under the prefix before this
+                    # upload are not a failure of the upload itself.
+                    ignore_extra_remote=True
                 )
                 result["verification"] = verification
                 if not verification.get("success", False):
@@ -2045,7 +2093,16 @@ class InoS3Helper:
 
         # Hoist the client outside the per-file fn so we don't open a new one
         # per object. The shared client is reused across the whole batch.
-        s3 = await self._get_client()
+        try:
+            s3 = await self._get_client()
+        except Exception as e:
+            return ino_err(
+                f"Failed to acquire S3 client: {e}",
+                error_code=type(e).__name__,
+                links=[],
+                count=0,
+                failed_count=0,
+            )
 
         async def _generate_link(obj: Dict[str, Any]) -> Dict[str, Any]:
             """Generate a presigned URL for a single object using list metadata."""
@@ -2114,6 +2171,8 @@ class InoS3Helper:
             bucket_name: Optional[str] = None,
             fail_fast: bool = False,
             follow_symlinks: bool = False,
+            ignore_extra_local: bool = False,
+            ignore_extra_remote: bool = False,
     ) -> Dict[str, Any]:
         """
         Verify that the files in a local folder and the files in an S3 folder (prefix) are in sync.
@@ -2132,6 +2191,12 @@ class InoS3Helper:
             follow_symlinks: If False (default), skip symlinks during the
                 local folder walk to avoid cycles or counting files outside
                 the target tree.
+            ignore_extra_local: If True, local files with no remote
+                counterpart don't fail verification (useful after
+                download_folder into a folder that already had other files).
+            ignore_extra_remote: If True, remote objects with no local
+                counterpart don't fail verification (useful after
+                upload_folder to a prefix that already had other objects).
 
         Returns:
             Dict with success flag, counts, missing lists, mismatches, and a human-readable summary
@@ -2154,18 +2219,12 @@ class InoS3Helper:
             # Build local files map: relative_path (with forward slashes) -> size.
             # Skip symlinks by default for consistency with sync_folder /
             # upload_folder / download_folder.
-            local_map: Dict[str, int] = {}
-            for file_path in local_folder.rglob("*"):
-                if not follow_symlinks and file_path.is_symlink():
-                    continue
-                if not file_path.is_file():
-                    continue
-                try:
-                    rel = file_path.relative_to(local_folder)
-                except ValueError:
-                    continue
-                rel_norm = str(rel).replace("\\", "/")
-                local_map[rel_norm] = file_path.stat().st_size
+            def _walk_sizes() -> Dict[str, int]:
+                return {
+                    rel: p.stat().st_size
+                    for rel, p in self._walk_local_files(local_folder, follow_symlinks).items()
+                }
+            local_map: Dict[str, int] = await asyncio.to_thread(_walk_sizes)
 
             # Build remote files map by listing all objects under prefix
             remote_map: Dict[str, int] = {}
@@ -2199,8 +2258,8 @@ class InoS3Helper:
             local_set = set(local_map.keys())
             remote_set = set(remote_map.keys())
 
-            missing_in_remote = sorted(list(local_set - remote_set))
-            missing_in_local = sorted(list(remote_set - local_set))
+            missing_in_remote = [] if ignore_extra_local else sorted(list(local_set - remote_set))
+            missing_in_local = [] if ignore_extra_remote else sorted(list(remote_set - local_set))
 
             if fail_fast and (missing_in_remote or missing_in_local):
                 summary_parts = []
@@ -2287,6 +2346,8 @@ class InoS3Helper:
                 }
                 if metadata:
                     params["Metadata"] = metadata
+                if self.upload_checksum_algorithm:
+                    params["ChecksumAlgorithm"] = self.upload_checksum_algorithm
                 await s3.put_object(**params)
                 return ino_ok(f"✅ Uploaded bytes to s3://{bucket}/{norm_key}", bucket=bucket, s3_key=norm_key, content_type=params["ContentType"])
         return await self._retry_operation(_op, f"put_bytes(len={len(data)} -> s3://{bucket}/{norm_key})")
@@ -2360,13 +2421,28 @@ class InoS3Helper:
         async def _verify_operation() -> Dict[str, Any]:
             try:
                 async with self._client_ctx() as s3:
-                    # Retrieve remote object's metadata
-                    head = await s3.head_object(Bucket=bucket, Key=self._normalize_key(s3_key))
+                    # Retrieve remote object's metadata. ChecksumMode="ENABLED"
+                    # is required for S3 to include ChecksumSHA256 in the
+                    # response at all — without it the sha256 path never runs.
+                    head = await s3.head_object(
+                        Bucket=bucket,
+                        Key=self._normalize_key(s3_key),
+                        ChecksumMode="ENABLED",
+                    )
                     remote_size = int(head.get("ContentLength", 0))
                     etag_raw = head.get("ETag")
                     # ETag comes quoted, e.g. "abcd..."
                     etag = etag_raw.strip('"') if isinstance(etag_raw, str) else None
                     remote_sha256_b64 = head.get("ChecksumSHA256")
+
+                    # For SSE-KMS / SSE-C encrypted objects the ETag is NOT the
+                    # content MD5 even for single-part uploads — comparing it
+                    # would report a mismatch for perfectly good files.
+                    sse = head.get("ServerSideEncryption")
+                    etag_is_md5 = not (
+                        sse in ("aws:kms", "aws:kms:dsse")
+                        or head.get("SSECustomerAlgorithm")
+                    )
 
                     local_size = local_path.stat().st_size
                     sizes_match = (local_size == remote_size)
@@ -2376,7 +2452,7 @@ class InoS3Helper:
                     md5_supported = False
 
                     # Only attempt MD5 compare when requested and ETag indicates single-part upload
-                    if use_md5 and etag and "-" not in etag:
+                    if use_md5 and etag and "-" not in etag and etag_is_md5:
                         md5_supported = True
                         md5_checked = True
                         local_md5 = await self._md5_hex_async(local_path)
@@ -2384,7 +2460,10 @@ class InoS3Helper:
 
                     sha256_checked = False
                     sha256_match: Optional[bool] = None
-                    if use_sha256 and remote_sha256_b64:
+                    # A "-N" suffix marks a composite (multipart) checksum —
+                    # checksum-of-part-checksums, not comparable to the local
+                    # whole-file sha256.
+                    if use_sha256 and remote_sha256_b64 and "-" not in remote_sha256_b64:
                         sha256_checked = True
                         local_sha256_b64 = await self._sha256_b64_async(local_path)
                         sha256_match = (local_sha256_b64 == remote_sha256_b64)

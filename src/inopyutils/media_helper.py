@@ -1,4 +1,5 @@
 import asyncio
+import warnings
 from pathlib import Path
 from typing import Dict, Any, Tuple
 from PIL import Image, ImageOps, ExifTags
@@ -24,6 +25,7 @@ class InoMediaHelper:
     ) -> dict:
         output_path = output_path.with_suffix('.mp4')
         temp_output = output_path.with_name(output_path.stem + "_converted.mp4")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
         args = [
             'ffmpeg', '-y',
@@ -68,16 +70,22 @@ class InoMediaHelper:
             stdout, stderr = await proc.communicate()
 
             if proc.returncode != 0:
+                # Clean up any partially written temp output before returning the error
+                if temp_output.exists():
+                    await asyncio.to_thread(temp_output.unlink)
                 return ino_err(f"❌ Conversion failed ({input_path.name}): {stderr.decode().strip()}", original_size = 0, converted_size = 0)
-
-            original_size = input_path.stat().st_size // 1024
-            converted_size = temp_output.stat().st_size // 1024
 
             if not temp_output.exists():
                 return ino_err(f"❌ Conversion failed ({input_path.name}): Converted file not found", original_size = 0, converted_size = 0)
 
-            await asyncio.to_thread(input_path.unlink)
-            await asyncio.to_thread(shutil.move, str(temp_output), str(output_path))
+            original_size = input_path.stat().st_size // 1024
+            converted_size = temp_output.stat().st_size // 1024
+
+            # Move the converted file into place first, then remove the input,
+            # so a failed move never leaves us without the original.
+            await asyncio.to_thread(temp_output.replace, output_path)
+            if input_path.resolve() != output_path.resolve() and input_path.exists():
+                await asyncio.to_thread(input_path.unlink)
             return ino_ok(f"✅ Converted {input_path.name}", original_size = original_size, converted_size = converted_size)
         except Exception as e:
             return ino_err(f"❌ Video conversion error: {e}", original_size = 0, converted_size = 0)
@@ -179,6 +187,12 @@ class InoMediaHelper:
 
     @staticmethod
     async def image_convert_ffmpeg(input_path: Path, output_path: Path) -> dict:
+        if output_path.resolve() == input_path.resolve():
+            return ino_err(
+                f"❌ In-place conversion is not supported ({input_path.name}): "
+                f"output path must differ from input path"
+            )
+
         args = [
             'ffmpeg', '-y',
             '-loglevel', 'error',
@@ -195,6 +209,10 @@ class InoMediaHelper:
 
             if proc.returncode != 0:
                 return ino_err(f"❌ Conversion failed ({input_path.name}): {stderr.decode().strip()}")
+
+            # Verify the output actually exists (and is non-empty) before removing the input
+            if not output_path.exists() or output_path.stat().st_size == 0:
+                return ino_err(f"❌ Conversion failed ({input_path.name}): output file missing or empty")
 
             await asyncio.to_thread(input_path.unlink)
             return ino_ok(f"✅ Converted {input_path.name} ")
@@ -241,6 +259,22 @@ class InoMediaHelper:
             img = ImageOps.exif_transpose(img)
             orientation_changed = orig_orientation != 1
 
+            # Convert palette / exotic modes to RGB BEFORE any resize:
+            # resizing a P-mode image silently downgrades LANCZOS to NEAREST.
+            if img.mode == "P":
+                if "transparency" in img.info:
+                    img = img.convert("RGBA")
+                else:
+                    img = img.convert("RGB")
+            elif img.mode == "PA":
+                img = img.convert("RGBA")
+            if img.mode in ("RGBA", "LA"):
+                alpha = img.getchannel("A")
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                img = Image.composite(img.convert("RGB"), background, alpha)
+            elif img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+
             old_size: Tuple[int, int] = (img.width, img.height)
             need_resize = img.width > max_res or img.height > max_res
             if need_resize:
@@ -270,18 +304,6 @@ class InoMediaHelper:
                         new_size=new_size,
                         output=str(final_out),
                     )
-
-            if img.mode == "P":
-                if "transparency" in img.info:
-                    img = img.convert("RGBA")
-                else:
-                    img = img.convert("RGB")
-            if img.mode in ("RGBA", "LA"):
-                alpha = img.getchannel("A")
-                background = Image.new("RGB", img.size, (255, 255, 255))
-                img = Image.composite(img.convert("RGB"), background, alpha)
-            elif img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
 
             save_kwargs: Dict[str, Any] = {
                 "format": "JPEG",
@@ -330,8 +352,18 @@ class InoMediaHelper:
 
     @staticmethod
     def validate_video_res_fps(input_path: Path, max_res: int = 2560, max_fps: int = 30) -> dict:
+        warnings.warn(
+            "InoMediaHelper.validate_video_res_fps is deprecated and will be removed in a future release",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return ino_err("validate fps deprecated, ")
 
     @staticmethod
     def get_video_fps(input_path: Path) -> float:
+        warnings.warn(
+            "InoMediaHelper.get_video_fps is deprecated and will be removed in a future release",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return 0

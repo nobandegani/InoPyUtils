@@ -3,11 +3,17 @@ from typing import Dict, Any, Tuple, Optional, Union
 
 @dataclass
 class InoPhotoMetadata:
-    def __init__(self, profile: Optional[str] = None):
+    def __init__(self, profile: str = "", **kwargs):
         if profile == "iphone":
             self.iphone_profile()
         elif profile == "samsung":
             self.samsung_profile()
+
+        for k, v in kwargs.items():
+            if k in self.__dataclass_fields__:
+                setattr(self, k, v)
+            else:
+                raise TypeError(f"unexpected keyword argument '{k}'")
 
     camera_maker: Optional[str] = None
     camera_model: Optional[str] = None
@@ -96,6 +102,67 @@ class InoPhotoMetadata:
             self.saturation = ""  # Apple omits
         if self.sharpness is None:
             self.sharpness = ""  # Apple omits
+        if self.white_balance is None:
+            self.white_balance = "Auto"  # WhiteBalance
+        if self.photometric_interpretation is None:
+            self.photometric_interpretation = "RGB"  # PhotometricInterpretation
+        if self.digital_zoom is None:
+            self.digital_zoom = "1.0"  # DigitalZoomRatio
+        if self.exif_version is None:
+            self.exif_version = b"0232"  # ExifVersion
+
+    def samsung_profile(self):
+        # Camera
+        if self.camera_maker is None:
+            self.camera_maker = "samsung"
+        if self.camera_model is None:
+            self.camera_model = "Galaxy S22 Ultra"
+
+        # Core exposure
+        if self.f_stop is None:
+            self.f_stop = "f/1.8"  # FNumber
+        if self.exposure_time is None:
+            self.exposure_time = "1/50"  # ExposureTime
+        if self.iso_speed in (None, "", 0):
+            self.iso_speed = 100  # ISOSpeedRatings
+        if self.exposure_bias is None:
+            self.exposure_bias = 0  # ExposureBiasValue
+        if self.focal_length is None:
+            self.focal_length = "6.4 mm"  # FocalLength
+        if self.max_aperture is None:
+            self.max_aperture = "f/1.8"  # MaxApertureValue
+        if self.metering_mode is None:
+            self.metering_mode = "Center-weighted average"  # MeteringMode
+        if self.subject_distance is None:
+            self.subject_distance = ""  # Samsung usually omits this
+        if self.flash_mode is None:
+            self.flash_mode = "No flash"  # Flash
+        if self.flash_energy is None:
+            self.flash_energy = ""  # Not written by Samsung
+        if self.focal_length_35mm is None:
+            self.focal_length_35mm = 23  # FocalLengthIn35mmFilm
+
+        # Lens
+        if self.lens_maker is None:
+            self.lens_maker = "samsung"
+        if self.lens_model is None:
+            self.lens_model = "Galaxy S22 Ultra back quad camera"
+
+        # Advanced / processing
+        if self.camera_serial_number is None:
+            self.camera_serial_number = ""  # Samsung does not expose
+        if self.contrast is None:
+            self.contrast = ""  # Samsung omits
+        if self.brightness is None:
+            self.brightness = 2.87  # BrightnessValue
+        if self.light_source is None:
+            self.light_source = ""  # Usually undefined
+        if self.exposure_program is None:
+            self.exposure_program = "Normal"  # ExposureProgram
+        if self.saturation is None:
+            self.saturation = ""  # Samsung omits
+        if self.sharpness is None:
+            self.sharpness = ""  # Samsung omits
         if self.white_balance is None:
             self.white_balance = "Auto"  # WhiteBalance
         if self.photometric_interpretation is None:

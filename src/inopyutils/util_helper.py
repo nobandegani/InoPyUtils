@@ -12,15 +12,18 @@ def ino_ok(msg: str = "success", **extra: Any) -> Dict[str, Any]:
 def ino_err(msg: str = "error", **extra: Any) -> Dict[str, Any]:
     return {"success": False, "msg": msg, **extra}
 
-def ino_is_err(res: Any):
-    if isinstance(res, tuple):
-        if all(i is not None for i in res):
-            res = res[0]
-        else:
-            return True
+def ino_is_err(res: Any) -> bool:
+    """
+    Check whether a result envelope represents an error.
+
+    - dict: error unless it has a truthy "success" key (missing counts as error).
+    - None: treated as an error (an accidental None return must not pass as success).
+    - anything else: not an error.
+    """
     if isinstance(res, dict):
         return not res.get("success", False)
-
+    if res is None:
+        return True
     return False
 
 class InoUtilHelper:
