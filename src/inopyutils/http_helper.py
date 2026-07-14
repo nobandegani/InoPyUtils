@@ -143,6 +143,17 @@ class InoHttpHelper:
         # not "use the session default", so None must fall back to the configured one.
         return timeout if timeout is not None else aiohttp.ClientTimeout(**self._timeout_params)
 
+    def _effective_download_timeout(self, timeout: Optional[aiohttp.ClientTimeout]) -> aiohttp.ClientTimeout:
+        # For streaming downloads a `total` cap would abort any transfer that
+        # simply takes longer than the configured request timeout (30s default),
+        # no matter how healthy it is. Keep the connect/sock timeouts for stall
+        # protection but never cap the whole-transfer duration by default.
+        if timeout is not None:
+            return timeout
+        params = dict(self._timeout_params)
+        params["total"] = None
+        return aiohttp.ClientTimeout(**params)
+
     # Core request with retry
     async def _request(
         self,
@@ -575,7 +586,7 @@ class InoHttpHelper:
                     full_url,
                     params=params,
                     headers=req_headers,
-                    timeout=self._effective_timeout(timeout),
+                    timeout=self._effective_download_timeout(timeout),
                     allow_redirects=allow_redirects,
                     auth=auth_obj,
                 ) as resp:
@@ -886,7 +897,7 @@ class InoHttpHelper:
                 url,
                 params=params,
                 headers=probe_headers,
-                timeout=self._effective_timeout(timeout),
+                timeout=self._effective_download_timeout(timeout),
                 allow_redirects=allow_redirects,
                 auth=auth,
             ) as resp:
@@ -951,7 +962,7 @@ class InoHttpHelper:
                 url,
                 params=params,
                 headers=req_headers,
-                timeout=self._effective_timeout(timeout),
+                timeout=self._effective_download_timeout(timeout),
                 allow_redirects=allow_redirects,
                 auth=auth,
             ) as part_resp:

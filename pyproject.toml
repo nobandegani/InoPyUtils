@@ -8,12 +8,12 @@ version = "1.9.1"
 authors = [
     { name = "Inoland", email = "contact@inoland.net" },
 ]
-description = "Async Python utility library for S3 storage, HTTP client, media/audio processing, JSON/CSV, MongoDB, file management, logging, and configuration"
+description = "Async Python utility library for S3 storage, HTTP client, media/audio processing, JSON/CSV, MongoDB, file management, logging, configuration, and AI endpoints (OpenAI-compatible, RunPod, CivitAI)"
 readme = "README.md"
 license = "MPL-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-keywords = ["utilities", "s3", "async", "http", "media", "audio", "mongodb", "csv", "file-management", "logging", "configuration"]
+keywords = ["utilities", "s3", "async", "http", "media", "audio", "mongodb", "csv", "file-management", "logging", "configuration", "openai", "runpod", "civitai"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -27,7 +27,6 @@ classifiers = [
 dependencies = [
     "pillow>=12.0.0",
     "pillow_heif>=1.1.1",
-    "inocloudreve>=0.2.6",
     "aioboto3>=15.5.0",
     "aiofiles>=25.1.0",
     "aiohttp>=3.13.2",

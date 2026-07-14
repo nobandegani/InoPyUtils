@@ -51,7 +51,7 @@ python -m build
 
 ### Stateful (hold connection/session state, need init + close)
 
-- **`InoS3Helper`** (`s3_helper.py`) — Async S3 client wrapping aioboto3. Works with AWS S3, Backblaze B2, DigitalOcean Spaces, Wasabi, MinIO. Has retry with exponential backoff, upload/download (including folder sync), object listing, existence check, deletion, presigned URLs. Constructor takes credentials + endpoint + bucket. Also integrates `inocloudreve` for cloud storage.
+- **`InoS3Helper`** (`s3_helper.py`) — Async S3 client wrapping aioboto3. Works with AWS S3, Backblaze B2, DigitalOcean Spaces, Wasabi, MinIO. Has retry with exponential backoff, upload/download (including folder sync), object listing, existence check, deletion, presigned URLs. Constructor takes credentials + endpoint + bucket; optional `upload_checksum_algorithm` attaches checksums to uploads for sha256 verification.
 
 - **`InoHttpHelper`** (`http_helper.py`) — Async HTTP client wrapping aiohttp. Configurable timeouts, connection limits, retries with exponential backoff on 429/5xx. Methods: get/post/put/delete/patch + `download()` with resume support, multi-connection parallel range downloads, atomic temp-file finalization. Supports `async with` context manager. Returns `ino_ok`/`ino_err` dicts with status_code, headers, data.
 

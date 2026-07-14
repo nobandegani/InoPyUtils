@@ -88,6 +88,10 @@ async def main():
 asyncio.run(main())
 ```
 
+Notes:
+- Pass `upload_checksum_algorithm="SHA256"` to the constructor to attach checksums to uploads, enabling real sha256 verification in `verify_file` (AWS S3; some S3-compatible providers may not accept it).
+- `sync_folder` with `delete=True` (the default) refuses to run when the source side matches zero files while the destination has files (`error_code: "EmptySourceRefused"`) — a guard against typo'd prefixes/paths wiping the destination.
+
 ---
 
 ### HTTP Client (`InoHttpHelper`)
@@ -104,7 +108,7 @@ async def main():
         timeout_total=30.0,
         retries=3,
         backoff_factor=0.7,
-        default_headers={"User-Agent": "InoPyUtils/1.7.7"},
+        default_headers={"User-Agent": "InoPyUtils"},
     ) as client:
         # GET JSON
         resp = await client.get("/users/42", json=True)
@@ -431,6 +435,8 @@ async def main():
 asyncio.run(main())
 ```
 
+For Qwen3-style thinking models on vLLM, pass `enable_thinking=True` (or `False`) explicitly — by default the option is omitted entirely so requests stay compatible with the official OpenAI API.
+
 ---
 
 ### RunPod Serverless vLLM (`InoRunpodHelper`)
@@ -495,6 +501,8 @@ async def main():
 asyncio.run(main())
 ```
 
+Note: values are stored and returned raw — `%` characters (passwords, URL-encoded strings) are safe, and `%(var)s`-style ConfigParser interpolation is intentionally disabled.
+
 ---
 
 ### Structured Logging (`InoLogHelper`)
@@ -539,6 +547,9 @@ meta = InoPhotoMetadata(profile="iphone")
 meta.iso_speed = 100
 meta.gps_latitude = 37.7749
 meta.gps_longitude = -122.4194
+
+# Fields can also be set directly via the constructor (profile values fill the rest)
+meta = InoPhotoMetadata(profile="samsung", iso_speed=200, camera_model="Galaxy S24")
 ```
 
 ---
@@ -575,7 +586,6 @@ stamp = InoUtilHelper.get_date_time_utc_base64()
 | botocore / boto3 | AWS SDK |
 | motor | Async MongoDB driver |
 | openai | OpenAI-compatible API client |
-| inocloudreve | Cloud storage integration |
 
 **Optional:** FFmpeg — required for `InoMediaHelper` video conversion and `InoAudioHelper` audio transcoding.
 
@@ -585,7 +595,7 @@ stamp = InoUtilHelper.get_date_time_utc_base64()
 
 - **Version**: 1.9.1
 - **Status**: Beta
-- **Python**: 3.9+
+- **Python**: 3.12+
 - **License**: [Mozilla Public License 2.0](LICENSE)
 - **Homepage**: [github.com/nobandegani/InoPyUtils](https://github.com/nobandegani/InoPyUtils)
 - **Issues**: [github.com/nobandegani/InoPyUtils/issues](https://github.com/nobandegani/InoPyUtils/issues)
