@@ -1,6 +1,6 @@
 # InoPyUtils
 
-[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
+[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![Version](https://img.shields.io/badge/version-1.9.1-green)](https://pypi.org/project/inopyutils/)
 [![License](https://img.shields.io/badge/license-MPL--2.0-orange)](LICENSE)
 [![Development Status](https://img.shields.io/badge/status-beta-yellow)](https://pypi.org/project/inopyutils/)
@@ -34,7 +34,7 @@ pip install -e .
 ```
 
 ### Requirements
-- **Python** 3.9+
+- **Python** 3.12+
 - **FFmpeg** (optional) — required for `InoMediaHelper` video conversion and `InoAudioHelper` audio transcoding
 
 ---

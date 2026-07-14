@@ -12,15 +12,12 @@ description = "Async Python utility library for S3 storage, HTTP client, media/a
 readme = "README.md"
 license = "MPL-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 keywords = ["utilities", "s3", "async", "http", "media", "audio", "mongodb", "csv", "file-management", "logging", "configuration"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",

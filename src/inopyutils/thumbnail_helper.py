@@ -66,13 +66,16 @@ class InoThumbnailHelper:
         # Prepare a square image either by center-cropping (crop=True)
         # or padding to square with a blurred background (crop=False)
 
-        original_image = Image.open(str(image_path))
-
-        original_image = ImageOps.exif_transpose(original_image)
+        try:
+            original_image = Image.open(str(image_path))
+        except Exception as e:
+            return ino_err(f"Failed to open image {image_path}: {e}")
 
         output_paths: List[str] = []
 
         try:
+            original_image = ImageOps.exif_transpose(original_image)
+
             width, height = original_image.size
             if crop:
                 side = min(width, height)
@@ -145,7 +148,8 @@ class InoThumbnailHelper:
             return ino_err(f"Error generating thumbnails: {str(e)}")
         finally:
             original_image.close()
-            return ino_ok("Thumbnail generated", output_paths=output_paths)
+
+        return ino_ok("Thumbnail generated", output_paths=output_paths)
 
     @staticmethod
     async def image_generate_square_thumbnails_async(

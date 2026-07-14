@@ -979,6 +979,10 @@ class InoS3Helper:
             bucket_name: S3 bucket name (uses default if not provided)
             delete: If True (default), remove orphans on the destination side
                 (rsync-style). Set to False to leave extra files in place.
+                Safety guard: if the source side matches zero files while the
+                destination side has files, the sync refuses to run (error_code
+                "EmptySourceRefused") instead of wiping the destination —
+                pass delete=False or double-check the path/prefix.
             allow_full_bucket: If False (default), refuses an empty s3_key
                 because it would treat the entire bucket as the sync scope —
                 combined with delete=True that could wipe everything. Set
@@ -1130,8 +1134,24 @@ class InoS3Helper:
                     rel_norm = str(rel).replace("\\", "/")
                     local_files[rel_norm] = file_path
 
+                result["total_local_files"] = len(local_files)
+
                 remote_rel_set = set(remote_objects.keys())
                 local_rel_set = set(local_files.keys())
+
+                # Refuse a mass wipe: an empty remote listing combined with
+                # delete=True would remove every local file. A zero-match
+                # prefix is far more often a typo than an intentional request.
+                if delete_orphans and not remote_objects and local_files:
+                    result["success"] = False
+                    result["msg"] = (
+                        f"Refused to sync: no remote objects under s3://{bucket}/{prefix} "
+                        f"but {len(local_files)} local file(s) exist — delete=True would "
+                        f"remove all of them. Check the prefix, or pass delete=False."
+                    )
+                    result["error_code"] = "EmptySourceRefused"
+                    logger.warning(result["msg"])
+                    return result
 
                 # Remove files not present in remote (only when delete_orphans=True)
                 if delete_orphans:
@@ -1203,11 +1223,13 @@ class InoS3Helper:
                                     else:
                                         must_download = False
 
+                            tmp_file = local_file.with_name(local_file.name + ".inosync.part")
                             try:
                                 if must_download:
-                                    if local_file.exists():
-                                        local_file.unlink(missing_ok=True)
-                                    await s3.download_file(bucket, s3_obj_key, str(local_file), Config=transfer_config)
+                                    # Download to a temp file and atomically replace, so a
+                                    # failed transfer never destroys the existing local copy.
+                                    await s3.download_file(bucket, s3_obj_key, str(tmp_file), Config=transfer_config)
+                                    tmp_file.replace(local_file)
                                     downloaded_any = True
                                     if rel_key in local_files:
                                         updated_existing = True
@@ -1230,13 +1252,20 @@ class InoS3Helper:
                                         "attempts": attempt + 1,
                                     }
 
-                                if local_file.exists():
+                                # Discard the local copy only when a comparison actually
+                                # ran and mismatched (verify_method is set). A verify that
+                                # failed for transport reasons (S3 outage, throttling)
+                                # must not delete a possibly-good local file.
+                                if verify_res.get("verify_method") and local_file.exists():
                                     local_file.unlink(missing_ok=True)
 
                             except Exception as e:
                                 last_error = e
-                                if local_file.exists():
-                                    local_file.unlink(missing_ok=True)
+                            finally:
+                                try:
+                                    tmp_file.unlink(missing_ok=True)
+                                except OSError:
+                                    pass
 
                             if attempt < file_attempt_limit - 1:
                                 wait_time = min(30.0, (2 ** attempt) + random.uniform(0, 1))
@@ -1382,6 +1411,23 @@ class InoS3Helper:
 
                 remote_rel_set = set(remote_objects.keys())
                 local_rel_set = set(local_files.keys())
+
+                # Refuse a mass wipe: an empty local folder (including one that
+                # was just auto-created because the path didn't exist) combined
+                # with delete=True would remove every remote object under the
+                # prefix. A zero-match local path is far more often a typo than
+                # an intentional request.
+                if delete_orphans and not local_files and remote_objects:
+                    result["success"] = False
+                    result["msg"] = (
+                        f"Refused to sync: no local files under {local_folder} but "
+                        f"{len(remote_objects)} remote object(s) exist under "
+                        f"s3://{bucket}/{prefix} — delete=True would remove all of "
+                        f"them. Check the local path, or pass delete=False."
+                    )
+                    result["error_code"] = "EmptySourceRefused"
+                    logger.warning(result["msg"])
+                    return result
 
                 # Remove remote objects not present locally — batched up to
                 # 1000 keys per delete_objects call (S3 hard limit).

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**inopyutils** is a Python utility library (published on PyPI) containing multiple independent helper classes, each for a specific use-case. Most classes use `@staticmethod` methods. Licensed under MPL-2.0, targets Python 3.9+.
+**inopyutils** is a Python utility library (published on PyPI) containing multiple independent helper classes, each for a specific use-case. Most classes use `@staticmethod` methods. Licensed under MPL-2.0, targets Python 3.12+.
 
 ## Build & Development Commands
 

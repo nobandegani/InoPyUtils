@@ -137,6 +137,11 @@ class InoHttpHelper:
         if self._session is not None and not self._session.closed:
             await self._session.close()
 
+    def _effective_timeout(self, timeout: Optional[aiohttp.ClientTimeout]) -> aiohttp.ClientTimeout:
+        # aiohttp treats an explicit timeout=None as "disable timeouts entirely",
+        # not "use the session default", so None must fall back to the configured one.
+        return timeout if timeout is not None else aiohttp.ClientTimeout(**self._timeout_params)
+
     # Core request with retry
     async def _request(
         self,
@@ -173,7 +178,7 @@ class InoHttpHelper:
                     headers=merged_headers,
                     json=json,
                     data=data,
-                    timeout=timeout,
+                    timeout=self._effective_timeout(timeout),
                     allow_redirects=allow_redirects,
                     auth=auth_obj,
                 ) as resp:
@@ -545,7 +550,7 @@ class InoHttpHelper:
                     full_url,
                     params=params,
                     headers=req_headers,
-                    timeout=timeout,
+                    timeout=self._effective_timeout(timeout),
                     allow_redirects=allow_redirects,
                     auth=auth_obj,
                 ) as resp:
@@ -847,7 +852,7 @@ class InoHttpHelper:
                 url,
                 params=params,
                 headers=probe_headers,
-                timeout=timeout,
+                timeout=self._effective_timeout(timeout),
                 allow_redirects=allow_redirects,
                 auth=auth,
             ) as resp:
@@ -909,7 +914,7 @@ class InoHttpHelper:
                 url,
                 params=params,
                 headers=req_headers,
-                timeout=timeout,
+                timeout=self._effective_timeout(timeout),
                 allow_redirects=allow_redirects,
                 auth=auth,
             ) as part_resp:
