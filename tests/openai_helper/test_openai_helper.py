@@ -124,6 +124,10 @@ async def run_tests():
         check_bool("has finish_reason", res.get("finish_reason") is not None,
                    f"finish_reason={res.get('finish_reason')}")
         check_bool("has usage", res.get("usage") is not None, f"usage={res.get('usage')}")
+        check_bool("usage counts tokens",
+                   (res.get("usage") or {}).get("prompt_tokens", 0) > 0
+                   and (res.get("usage") or {}).get("completion_tokens", 0) > 0,
+                   f"usage={res.get('usage')}")
         check_bool("has raw response", res.get("raw") is not None)
         print(f"\n         --- Response ---\n{res.get('response')}")
         print(f"\n         usage: {res.get('usage')}")
@@ -141,9 +145,13 @@ async def run_tests():
         user_prompt="What's the weather like today?",
         temperature=0.7,
         max_tokens=256,
+        enable_thinking=False,
     )
     check("system prompt persona", res)
     if res.get("success"):
+        check_bool("persona response non-empty",
+                   isinstance(res.get("response"), str) and len(res["response"].strip()) > 0,
+                   f"response={res.get('response')!r}")
         print(f"\n         --- Response ---\n{res.get('response')}")
 
     # ------------------------------------------------------------------
@@ -159,9 +167,24 @@ async def run_tests():
         user_prompt="I absolutely love this new phone, it's the best purchase I've made all year!",
         temperature=0,
         max_tokens=128,
+        # Thinking would eat the whole 128-token budget and leave content empty
+        enable_thinking=False,
     )
     check("structured output", res)
     if res.get("success"):
+        raw_text = (res.get("response") or "").strip()
+        check_bool("structured output non-empty", len(raw_text) > 0,
+                   f"response={raw_text!r} (empty usually means thinking consumed max_tokens)")
+        import json as _json
+        cleaned = raw_text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        try:
+            parsed = _json.loads(cleaned)
+            check_bool("structured output is valid JSON with schema keys",
+                       isinstance(parsed, dict) and "sentiment" in parsed and "confidence" in parsed,
+                       f"parsed={parsed!r}")
+        except ValueError as e:
+            check_bool("structured output is valid JSON with schema keys", False,
+                       f"JSON parse failed: {e}; text={cleaned[:120]!r}")
         print(f"\n         --- Response ---\n{res.get('response')}")
 
     # ------------------------------------------------------------------
@@ -177,9 +200,13 @@ async def run_tests():
         user_prompt="Write a 2-sentence story about a robot discovering music for the first time.",
         temperature=0.9,
         max_tokens=256,
+        enable_thinking=False,
     )
     check("creative generation", res)
     if res.get("success"):
+        check_bool("creative response non-empty",
+                   isinstance(res.get("response"), str) and len(res["response"].strip()) > 0,
+                   f"response={res.get('response')!r}")
         print(f"\n         --- Response ---\n{res.get('response')}")
 
     # ------------------------------------------------------------------
@@ -203,6 +230,7 @@ async def run_tests():
             image=image_data_uri,
             temperature=0.3,
             max_tokens=256,
+            enable_thinking=False,
         )
         check("image base64", res)
         if res.get("success"):
@@ -285,6 +313,9 @@ async def run_tests():
     )
     check("vllm sampling params", res)
     if res.get("success"):
+        check_bool("sampling params response non-empty",
+                   isinstance(res.get("response"), str) and len(res["response"].strip()) > 0,
+                   f"response={res.get('response')!r}")
         print(f"\n         --- Response ---\n{res.get('response')}")
 
     # ------------------------------------------------------------------
@@ -306,6 +337,9 @@ async def run_tests():
     )
     check("extra_body passthrough", res)
     if res.get("success"):
+        check_bool("extra_body response non-empty",
+                   isinstance(res.get("response"), str) and len(res["response"].strip()) > 0,
+                   f"response={res.get('response')!r}")
         print(f"\n         --- Response ---\n{res.get('response')}")
 
     # ------------------------------------------------------------------
@@ -360,9 +394,51 @@ async def run_tests():
         )
         check("modal auth", res)
         if res.get("success"):
+            check_bool("modal auth response mentions 'modal'",
+                       "modal" in (res.get("response") or "").lower(),
+                       f"response={res.get('response')!r}")
             print(f"\n         --- Response ---\n{res.get('response')}")
     else:
         print("  [SKIP] OPENAI_API_KEY is not in Modal format (wk-...:ws-...)")
+
+    # ------------------------------------------------------------------
+    # 13. max_tokens truncation — finish_reason should be "length"
+    # ------------------------------------------------------------------
+    print("\n--- 13. max_tokens truncation (finish_reason=length) ---")
+
+    res = await InoOpenAIHelper.chat_completions(
+        api_key=API_KEY,
+        base_url=BASE_URL,
+        model=MODEL,
+        user_prompt="Write a long, detailed story about the ocean.",
+        temperature=0.7,
+        max_tokens=16,
+        enable_thinking=False,
+    )
+    check("truncated generation", res)
+    if res.get("success"):
+        check_bool("finish_reason is 'length'",
+                   res.get("finish_reason") == "length",
+                   f"finish_reason={res.get('finish_reason')!r}")
+        print(f"\n         --- Response (truncated) ---\n{res.get('response')}")
+
+    # ------------------------------------------------------------------
+    # 14. kwargs passthrough — per-request timeout forwarded to the SDK
+    # ------------------------------------------------------------------
+    print("\n--- 14. kwargs passthrough (per-request timeout) ---")
+
+    res = await InoOpenAIHelper.chat_completions(
+        api_key=API_KEY,
+        base_url=BASE_URL,
+        model=MODEL,
+        user_prompt="Hello",
+        max_tokens=8,
+        enable_thinking=False,
+        timeout=0.001,  # forwarded via **kwargs to chat.completions.create
+    )
+    check_bool("tiny timeout returns error envelope", not res.get("success"),
+               f"expected timeout failure but got: {res.get('msg')}")
+    print(f"         msg: {res.get('msg')}")
 
     # ------------------------------------------------------------------
     # Summary

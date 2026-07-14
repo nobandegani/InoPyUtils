@@ -122,7 +122,11 @@ class InoOpenAIHelper:
             msg = choice.message if choice else None
 
             content = (msg.content if msg else "") or ""
-            reasoning = getattr(msg, "reasoning", None) if msg else None
+            # vLLM and llama-server return the thinking trace as
+            # `reasoning_content`; some servers use `reasoning` — accept both.
+            reasoning = (
+                getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
+            ) if msg else None
             tool_calls = getattr(msg, "tool_calls", None) if msg else None
 
             return ino_ok(
