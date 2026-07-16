@@ -215,6 +215,8 @@ async def run_tests():
     print("\n--- 5. Image input (base64 data URI) ---")
 
     image_path = Path(__file__).resolve().parents[1] / "assets" / "image.jpg"
+    check_bool("test image exists", image_path.exists(),
+               f"image.jpg not found at {image_path}")
     if image_path.exists():
         import base64
         image_bytes = image_path.read_bytes()
@@ -240,8 +242,36 @@ async def run_tests():
             print(f"\n         --- Response ---\n{res.get('response')}")
         else:
             print(f"         msg: {res.get('msg')}")
+
+    # ------------------------------------------------------------------
+    # 5b. Image input — remote https URL
+    # ------------------------------------------------------------------
+    print("\n--- 5b. Image input (https URL) ---")
+
+    image_url = (
+        "https://raw.githubusercontent.com/EliSchwartz/"
+        "imagenet-sample-images/master/n01440764_tench.JPEG"
+    )
+
+    res = await InoOpenAIHelper.chat_completions(
+        api_key=API_KEY,
+        base_url=BASE_URL,
+        model=MODEL,
+        system_prompt="Describe images concisely in 1-2 sentences.",
+        user_prompt="What do you see in this image?",
+        image=image_url,
+        temperature=0.3,
+        max_tokens=256,
+        enable_thinking=False,
+    )
+    check("image url", res)
+    if res.get("success"):
+        check_bool("image url has response",
+                   isinstance(res.get("response"), str) and len(res["response"]) > 0,
+                   f"response={res.get('response')}")
+        print(f"\n         --- Response ---\n{res.get('response')}")
     else:
-        print(f"  [SKIP] image.jpg not found at {image_path}")
+        print(f"         msg: {res.get('msg')}")
 
     # ------------------------------------------------------------------
     # 6. Thinking enabled — should produce a `reasoning` trace
